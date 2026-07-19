@@ -407,7 +407,7 @@ def prepare_ai_context(excel_path, target_date):
     if "【AI】予想・答え合わせ" in wb.sheetnames:
         predict_ws = wb["【AI】予想・答え合わせ"]
         pred_history.append("### 過去のAI予想・答え合わせ履歴 (直近の答え合わせ結果) ###")
-        pred_history.append("予想日 | 機種名 | 台番号 | 予想・狙い根拠 | 実際のG数 | 実際の差枚 | 判定(〇/×)")
+        pred_history.append("予想日 | 機種名 | 台番号 | 予想・狙い根拠 | 実際のG数 | 実際の差枚 | 設定スコア | 判定(〇/×)")
         
         real_max_pred = 3
         for r in range(predict_ws.max_row, 3, -1):
@@ -424,17 +424,55 @@ def prepare_ai_context(excel_path, target_date):
                 predict_ws.cell(r, 4).value, # D: 根拠
                 predict_ws.cell(r, 5).value, # E: 実際のG数
                 predict_ws.cell(r, 6).value, # F: 実際の差枚
-                predict_ws.cell(r, 7).value, # G: 判定
+                predict_ws.cell(r, 7).value, # G: 設定スコア
+                predict_ws.cell(r, 8).value, # H: 判定
             ]
             if isinstance(row_vals[0], datetime.datetime):
                 row_vals[0] = row_vals[0].strftime("%Y/%m/%d")
             pred_history.append(" | ".join([str(x) if x is not None else "" for x in row_vals]))
             
+    # 4. Load manual confirmation info (Trophy, events, SNS hints, etc.)
+    confirm_data = []
+    if "確認情報" in wb.sheetnames:
+        confirm_ws = wb["確認情報"]
+        confirm_data.append("### ユーザー入力の店舗確認情報 (公約・示唆・トロフィー等の一次情報) ###")
+        
+        for r in range(2, confirm_ws.max_row + 1):
+            row_vals = [confirm_ws.cell(r, c).value for c in range(1, confirm_ws.max_column + 1)]
+            if not any(v is not None for v in row_vals):
+                continue
+                
+            row_date = None
+            other_texts = []
+            for val in row_vals:
+                if val is None:
+                    continue
+                if isinstance(val, (datetime.datetime, datetime.date)):
+                    row_date = val.strftime("%Y/%m/%d")
+                elif isinstance(val, str):
+                    val_clean = val.strip()
+                    # Match dates like YYYY/MM/DD or YYYY-MM-DD
+                    if re.match(r'^\d{4}/\d{2}/\d{2}$', val_clean) or re.match(r'^\d{4}-\d{2}-\d{2}$', val_clean):
+                        row_date = val_clean.replace("-", "/")
+                    else:
+                        if val_clean:
+                            other_texts.append(val_clean)
+                else:
+                    other_texts.append(str(val))
+                    
+            if row_date and other_texts:
+                confirm_data.append(f"  {row_date} : " + " / ".join(other_texts))
+            elif other_texts:
+                confirm_data.append(f"  (日付不明) : " + " / ".join(other_texts))
+    else:
+        confirm_data.append("  (入力情報なし)")
+        
     wb.close()
     
     return (
         "\n".join(dash_data) + "\n\n" + 
         "\n".join(data_rows) + "\n\n" + 
+        "\n".join(confirm_data) + "\n\n" + 
         "\n".join(pred_history)
     )
 
@@ -453,52 +491,67 @@ def run_gemini_analysis(api_key, context, target_date):
     tomorrow_date = (d_obj + datetime.timedelta(days=1)).strftime("%Y/%m/%d")
     
     prompt = f"""
-あなたはパチスロホールの設定配分を分析するプロのデータサイエンティストであり、専属 of アナリストです。
-提供されたホールの営業データ、および「過去のAI予想・答え合わせ履歴（どの台番を何の根拠で狙い、実際どうだったか）」から、店長の投入クセの傾向変化を学習した上で、明日の推奨狙い台を決定してください。
+あなたはパチスロホールの設定配分を分析するプロのデータサイエンティストであり、月100万円以上を安定して稼ぐ現役パチプロ兼データアナリストです。
+提供されたホールの営業データ、および「過去のAI予想・答え合わせ履歴」「ユーザーが直接入力した店舗確認情報（公約や示唆、確定情報など）」から、店長の投入クセの傾向変化を学習した上で、明日の推奨狙い台を決定してください。
+
+一般ユーザー向けの解説は不要です。期待値を最大化するための分析のみを行ってください。
 
 ---
 【直近のデータ状況】
 分析対象日: {target_date} （このデータを本日追加しました）
 狙い対象日 (翌日): {tomorrow_date}
 
-以下に最新のダッシュボード値、蓄積用データの直近100台分のサマリー、および過去30台分の「答え合わせ履歴（判定〇×）」を提供します。
+以下に最新のダッシュボード値、蓄積用データの直近100台分のサマリー、ユーザー入力の最新店舗確認情報（公約やトロフィーなどの一次情報）、および過去30台分の「答え合わせ履歴（判定〇×）」を提供します。
 {context}
 
 ---
-【分析のミッション】
-提供された「過去のAI予想・答え合わせ履歴」を注意深く分析してください：
-- 過去に「上げ狙い（前日凹み台）」や「据え置き（前日高設定）」といった根拠で予想した台が、実際にどれだけ成功（〇）し、どれだけ失敗（×）しているか？
-- 失敗が多い根拠は、店長の投入ルール変更や、設定配分パターンズレを示しています。成功している法則と失敗している法則を自ら学習し、明日の予測ロジックを補正してください。
+【最優先・分析ルール】
 
-【分析の必須ステップ】
-1. 機種別の一推しと本気度の検証
-2. 前日凹み台の上げ狙い検証、据え置き検証、末尾・角のクセの検証（過去の答え合わせ結果を踏まえる）
-3. 翌日の推奨狙い台の選定
+① 一次情報（店舗確認情報）の最優先
+「店舗確認情報」にトロフィー、確定画面、SNS示唆、LINE示唆、イベント公約、演者来店などが入力されている場合、これはAI of 過去データ推測より優先される「絶対的事実」です。これらに合致する台（例: 全台系公約、並び公約など）がある場合は、最優先で狙い台として選定してください。
+
+② 荒波機種（スマスロ等）の補正
+からくりサーカス、ヴァルヴレイヴ、戦国乙女、チバリヨ、かぐや様、東京喰種、北斗、ゴッドイーター、モンキーターンなどは、差枚数だけで設定を判断せず、ゲーム数、初当たり、設定差のある要素（小役・示唆）を重視してください。3000G未満の大量出玉は「誤爆リスク」として評価し、据え置き期待度は下げてください。
+
+③ ノーマルタイプ（ジャグラー等）の補正
+ジャグラー、ハナハナ等のノーマル機は、差枚よりも「REG確率」「合算確率」「回転数」「ブドウ逆算値」「REG先行度合い」を最重視して判断してください。
+
+④ リスク評価とあいまいさの排除
+中間設定（設定4〜5）の可能性やヒキ強による誤爆リスクも必ず根拠内で考慮してください。「設定6濃厚」という安易な表現は禁止し、「設定5〜6期待」「高設定期待」などの堅実な表現を使用してください。
+
+⑤ 店長心理・クセの分析
+店長の投入パターン（並び、全台系、据え置き、末尾、角、中央、ローテーション傾向）を分析し、店長の心理を考察してください。
 
 ---
 【絶対厳守の出力フォーマット】
 以下の構成で日本語で出力してください。スプレッドシートやドキュメントにそのままコピーできる構成とします。
 
 ① 【AI】営業評価と店長の心理総括
-最新日の結果を踏まえた、店長の設定配分における「見せたい意図（還元）」または「回収の意図」の考察（1分で読める文章）。
+冒頭に、必ず明日の参戦評価として以下のいずれか1つを大見出しで明記してください。
+- **【明日の参戦評価：行ける（勝負すべき日）】**
+- **【明日の参戦評価：狙い目だけ打ちに行く（ピンポイント狙い）】**
+- **【明日の参戦評価：行く価値無し（見送り推奨）】**
+その後に、最新日の結果を踏まえた店長の意図（還元・回収）の考察を1分で読める文量で書いてください。
 
 ② 機種別・設定投入の「本気度」検証
 「今、最も設定が狙える本命機種」と「回収用の死に機種」のリストアップと理由。
 
 ③ Excel予測スコアの「妥当性検証レポート」
-現在の予測スコア（AP列等）が実際の店舗傾向と合っているかの検証。ズレの指摘。
+現在の予測スコアが実際の店舗傾向と合っているかの検証。ズレの指摘。
 
 ④ AI独自の次回（明日）の推奨狙い目台（全機種TOP5 ＆ ジャグラーTOP5）
-表面的なスコアだけでなく、「周期」「機種の強さ」「店長の直近の投入バイアス」を複合して補正した推奨台と根拠。
+表面的なスコアだけでなく、「周期」「機種の強さ」「確認情報の事実」を複合して補正した推奨台と根拠。
 
 ⑤ 【AI】予想・答え合わせ コピペ用テーブル
 推奨狙い目台（全機種5台 ＋ ジャグラー5台 ＝ 計10台）を、以下のMarkdown表形式で出力してください。
 余計なテキストを挟まず、必ず表をそのまま出力すること。
 日付には結果日（＝狙い日：{tomorrow_date}）を記入すること。
 
+★重要★: 推奨度の強さを可視化するため、「予想・狙い根拠」の文頭には必ず【推奨Sランク - 95点】、【推奨Aランク - 80点】、【推奨Bランク - 65点】のように、推奨ランク（S/A/B）と100点満点での評価スコアを記載してください。期待値の低い台はBランク以下で表現し、自信のある台はS〜Aランクにしてください。
+
 | 日付 | 機種名 | 台番号 | 予想・狙い根拠 |
 | --- | --- | --- | --- |
-| {tomorrow_date} | [機種名] | [台番号] | [具体的な数値を交えた1文の根拠] |
+| {tomorrow_date} | [機種名] | [台番号] | 【推奨[S/A/B]ランク - [点数]点】[具体的な数値や確認情報を交えた狙い根拠] |
 """
     
     for model_name in models_to_try:
