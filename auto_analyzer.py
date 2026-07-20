@@ -122,8 +122,8 @@ def read_file_with_encoding(filepath):
 
 def parse_html_data(filepath):
     """
-    Parses Pachislot data from a downloaded HTML file.
-    Only targets tables with explicit '台番' or '台番号' headers to ignore summary/history tables.
+    Parses Pachislot data from a downloaded HTML file using header detection.
+    Supports tables with or without '差枚' (difference coins) column.
     """
     results = []
     seen_machine_numbers = set()
@@ -141,20 +141,22 @@ def parse_html_data(filepath):
                 
         header_text = "".join(headers)
         
-        # Strict check: Must contain BB and REG/RB, AND must explicitly mention 台番 or 台番号
         is_slot_table = (
-            ("BB" in headers and "RB" in headers) and 
+            ("BB" in header_text or "BIG" in header_text) and 
+            ("RB" in header_text or "REG" in header_text) and 
             any(h in header_text for h in ["台番", "台番号"])
         )
         if not is_slot_table:
             continue
             
+        has_diff = ("差枚" in header_text)
+        
         rows = table.find_all('tr')
         for row in rows:
             cells = [td.get_text().strip() for td in row.find_all('td')]
-            if len(cells) >= 5:
+            if len(cells) >= 4:
                 cell_text = "".join(cells)
-                if any(x in cell_text for x in ["平均", "累計", "合計"]):
+                if any(x in cell_text for x in ["平均", "累計", "合計", "台番号", "機種名"]):
                     continue
                 try:
                     def clean_val(val):
@@ -167,16 +169,26 @@ def parse_html_data(filepath):
                         machine_number = int(c0_clean)
                         machine_name = cells[1]
                         g_games = int(clean_val(cells[2]))
-                        diff_coins = int(clean_val(cells[3]))
-                        bb_count = int(clean_val(cells[4]))
-                        rb_count = int(clean_val(cells[5])) if len(cells) > 5 else 0
+                        if has_diff:
+                            diff_coins = int(clean_val(cells[3]))
+                            bb_count = int(clean_val(cells[4]))
+                            rb_count = int(clean_val(cells[5])) if len(cells) > 5 else 0
+                        else:
+                            diff_coins = 0
+                            bb_count = int(clean_val(cells[3]))
+                            rb_count = int(clean_val(cells[4])) if len(cells) > 4 else 0
                     else:
                         machine_name = cells[0]
                         machine_number = int(c1_clean)
                         g_games = int(clean_val(cells[2]))
-                        diff_coins = int(clean_val(cells[3]))
-                        bb_count = int(clean_val(cells[4]))
-                        rb_count = int(clean_val(cells[5])) if len(cells) > 5 else 0
+                        if has_diff:
+                            diff_coins = int(clean_val(cells[3]))
+                            bb_count = int(clean_val(cells[4]))
+                            rb_count = int(clean_val(cells[5])) if len(cells) > 5 else 0
+                        else:
+                            diff_coins = 0
+                            bb_count = int(clean_val(cells[3]))
+                            rb_count = int(clean_val(cells[4])) if len(cells) > 4 else 0
                     
                     if machine_number in seen_machine_numbers:
                         continue
@@ -190,7 +202,7 @@ def parse_html_data(filepath):
                         "bb_count": bb_count,
                         "rb_count": rb_count
                     })
-                except ValueError:
+                except (ValueError, IndexError):
                     continue
                     
     print(f"Successfully extracted {len(results)} unique rows from HTML tables.")
@@ -355,126 +367,242 @@ def update_excel_data(excel_path, target_date, parsed_data):
 
 def prepare_ai_context(excel_path, target_date):
     wb = openpyxl.load_workbook(excel_path, data_only=True)
-    
-    # 1. Dashboard stats
-    dash_data = []
-    if '【PC】分析ダッシュボード' in wb.sheetnames:
-        dash_ws = wb['【PC】分析ダッシュボード']
-        dash_data.append("### 【PC】分析ダッシュボード 現在の統計値 ###")
-        for r in range(4, 38):
-            row_vals = [dash_ws.cell(r, c).value for c in range(2, 6)]
-            if any(row_vals):
-                dash_data.append(f"Row {r}: " + " | ".join([str(x) if x is not None else "" for x in row_vals]))
-    else:
-        dash_data.append("### 【PC】分析ダッシュボード (削除済み - 代替Web版参照) ###")
-            
-    # 2. Raw records
     data_ws = wb['【データ】蓄積用']
-    data_rows = []
-    data_rows.append("### 【データ】蓄積用 最新直近データ (直近100台) ###")
-    data_rows.append("日付 | 機種名 | 台番号 | G数 | 差枚 | BB | RB | 推定設定 | 機械割 | 期待収支")
     
-    real_max_row = 1
-    for r in range(data_ws.max_row, 0, -1):
-        val1 = data_ws.cell(r, 1).value
-        val2 = data_ws.cell(r, 2).value
-        if not is_empty_or_formula(val1) or not is_empty_or_formula(val2):
-            real_max_row = r
-            break
-            
-    start_row = max(2, real_max_row - 100)
-    for r in range(start_row, real_max_row + 1):
-        row_vals = [
-            data_ws.cell(r, 1).value, # A: 日付
-            data_ws.cell(r, 2).value, # B: 機種
-            data_ws.cell(r, 3).value, # C: 台番
-            data_ws.cell(r, 4).value, # D: G数
-            data_ws.cell(r, 5).value, # E: 差枚
-            data_ws.cell(r, 6).value, # F: BB
-            data_ws.cell(r, 7).value, # G: RB
-            data_ws.cell(r, 33).value, # AG: 推定設定
-            data_ws.cell(r, 34).value, # AH: 機械割
-            data_ws.cell(r, 35).value, # AI: 期待収支
-        ]
+    all_records = []
+    for r in range(2, data_ws.max_row + 1):
+        d_val = data_ws.cell(r, 1).value
+        m_name = data_ws.cell(r, 2).value
+        m_num = data_ws.cell(r, 3).value
+        g_val = data_ws.cell(r, 4).value
+        diff_val = data_ws.cell(r, 5).value
+        bb_val = data_ws.cell(r, 6).value
+        rb_val = data_ws.cell(r, 7).value
+        score_val = data_ws.cell(r, 29).value
         
-        if isinstance(row_vals[0], datetime.datetime):
-            row_vals[0] = row_vals[0].strftime("%Y/%m/%d")
+        if d_val is None or m_num is None:
+            continue
             
-        data_rows.append(" | ".join([str(x) if x is not None else "" for x in row_vals]))
+        if isinstance(d_val, (datetime.datetime, datetime.date)):
+            d_str = d_val.strftime("%Y/%m/%d")
+        else:
+            d_str = str(d_val).strip().replace("-", "/")
+            
+        try:
+            m_num_int = int(str(m_num).strip())
+        except ValueError:
+            continue
+            
+        g_int = int(g_val) if g_val is not None and str(g_val).isdigit() else 0
+        diff_int = int(diff_val) if diff_val is not None and str(diff_val).replace("-","").isdigit() else 0
+        try:
+            sc_float = float(score_val) if score_val is not None else 0.0
+        except ValueError:
+            sc_float = 0.0
+            
+        all_records.append({
+            'date': d_str,
+            'machine_name': str(m_name or ""),
+            'machine_number': m_num_int,
+            'g_games': g_int,
+            'diff_coins': diff_int,
+            'bb': int(bb_val) if bb_val and str(bb_val).isdigit() else 0,
+            'rb': int(rb_val) if rb_val and str(rb_val).isdigit() else 0,
+            'score': sc_float
+        })
+
+    unique_dates = sorted(list(set(r['date'] for r in all_records)))
+    recent_5_dates = unique_dates[-5:] if len(unique_dates) >= 5 else unique_dates
+
+    # --- Section 1: End Digit Matrix ---
+    tail_stats = {}
+    for digit in range(10):
+        tail_stats[digit] = {'total_diff': 0, 'total_count': 0, 'wins': 0, 'recent_diffs': []}
         
-    # 3. FEEDBACK LOOP: Load AI Prediction history and actual results (last 30 slots)
-    pred_history = []
+    for r in all_records:
+        t_digit = r['machine_number'] % 10
+        tail_stats[t_digit]['total_count'] += 1
+        tail_stats[t_digit]['total_diff'] += r['diff_coins']
+        if r['diff_coins'] > 0:
+            tail_stats[t_digit]['wins'] += 1
+            
+    for d_str in recent_5_dates:
+        day_recs = [r for r in all_records if r['date'] == d_str]
+        for digit in range(10):
+            d_recs = [r for r in day_recs if r['machine_number'] % 10 == digit]
+            d_sum = sum(r['diff_coins'] for r in d_recs) if d_recs else 0
+            tail_stats[digit]['recent_diffs'].append(f"{d_str[-5:]}:{d_sum:+d}枚")
+
+    tail_matrix_lines = []
+    for digit in range(10):
+        st = tail_stats[digit]
+        avg = round(st['total_diff'] / st['total_count']) if st['total_count'] > 0 else 0
+        w_rate = round((st['wins'] / st['total_count']) * 100) if st['total_count'] > 0 else 0
+        rec_str = " | ".join(st['recent_diffs'])
+        tail_matrix_lines.append(f"末尾【{digit}】: 平均差枚 {avg:+d}枚 | 勝率 {w_rate}% ({st['wins']}/{st['total_count']}) | 直近推移: {rec_str}")
+
+    # --- Section 2: Position Tendency Rates ---
+    position_lines = []
+    corner_recs = [r for r in all_records if r['machine_number'] % 10 in (1, 0, 5, 6)]
+    corner_win = round((sum(1 for r in corner_recs if r['diff_coins'] > 0) / len(corner_recs)) * 100) if corner_recs else 0
+    corner_avg = round(sum(r['diff_coins'] for r in corner_recs) / len(corner_recs)) if corner_recs else 0
+    position_lines.append(f"- 角台/角付近台: 勝率 {corner_win}% | 平均差枚 {corner_avg:+d}枚")
+    
+    other_recs = [r for r in all_records if r['machine_number'] % 10 not in (1, 0, 5, 6)]
+    other_win = round((sum(1 for r in other_recs if r['diff_coins'] > 0) / len(other_recs)) * 100) if other_recs else 0
+    other_avg = round(sum(r['diff_coins'] for r in other_recs) / len(other_recs)) if other_recs else 0
+    position_lines.append(f"- 中央/一般台: 勝率 {other_win}% | 平均差枚 {other_avg:+d}枚")
+
+    # --- Section 3: Machine Brand Strength ---
+    machine_summary = {}
+    for r in all_records:
+        name = r['machine_name']
+        if name not in machine_summary:
+            machine_summary[name] = {'total_diff': 0, 'count': 0, 'high_score_count': 0}
+        machine_summary[name]['total_diff'] += r['diff_coins']
+        machine_summary[name]['count'] += 1
+        if r['score'] >= 4.5 or r['diff_coins'] >= 1500:
+            machine_summary[name]['high_score_count'] += 1
+
+    mach_lines = []
+    for name, st in sorted(machine_summary.items(), key=lambda x: x[1]['total_diff'], reverse=True)[:15]:
+        avg = round(st['total_diff'] / st['count']) if st['count'] > 0 else 0
+        mach_lines.append(f"- {name}: 平均差枚 {avg:+d}枚 (全{st['count']}台) | 高設定/大爆発回数: {st['high_score_count']}回")
+
+    # --- Section 4: Machine History Matrix ---
+    mach_history_lines = []
+    unique_mach_nums = sorted(list(set(r['machine_number'] for r in all_records)))
+    for m_num in unique_mach_nums:
+        m_recs = [r for r in all_records if r['machine_number'] == m_num]
+        if not m_recs:
+            continue
+        m_recs = sorted(m_recs, key=lambda x: x['date'])[-5:]
+        m_name = m_recs[-1]['machine_name']
+        hist_str = ", ".join([f"{r['date'][-5:]}:G{r['g_games']}/差{r['diff_coins']:+d}/点{r['score']}" for r in m_recs])
+        mach_history_lines.append(f"台#{m_num} ({m_name}): {hist_str}")
+
+    # --- Section 5: High Setting History DB ---
+    high_setting_db_lines = []
+    for m_num in unique_mach_nums:
+        m_recs = sorted([r for r in all_records if r['machine_number'] == m_num], key=lambda x: x['date'])
+        high_recs = [r for r in m_recs if r['score'] >= 4.5 or r['diff_coins'] >= 1500]
+        if high_recs:
+            last_high_date = high_recs[-1]['date']
+            events_since = len([r for r in m_recs if r['date'] > last_high_date])
+            high_setting_db_lines.append(f"台#{m_num} ({m_recs[-1]['machine_name']}): 前回高設定 {last_high_date} | 経過イベント数 {events_since}回")
+
+    # --- Section 6: AI Prediction Review History & Penalty Tracker ---
+    pred_history_lines = []
+    penalty_tracker = {}
     if "【AI】予想・答え合わせ" in wb.sheetnames:
         predict_ws = wb["【AI】予想・答え合わせ"]
-        pred_history.append("### 過去のAI予想・答え合わせ履歴 (直近の答え合わせ結果) ###")
-        pred_history.append("予想日 | 機種名 | 台番号 | 予想・狙い根拠 | 実際のG数 | 実際の差枚 | 設定スコア | 判定(〇/×)")
-        
-        real_max_pred = 3
-        for r in range(predict_ws.max_row, 3, -1):
-            if predict_ws.cell(r, 1).value is not None:
-                real_max_pred = r
-                break
-                
-        start_pred_r = max(4, real_max_pred - 30)
-        for r in range(start_pred_r, real_max_pred + 1):
-            row_vals = [
-                predict_ws.cell(r, 1).value, # A: 予想日
-                predict_ws.cell(r, 2).value, # B: 機種名
-                predict_ws.cell(r, 3).value, # C: 台番号
-                predict_ws.cell(r, 4).value, # D: 根拠
-                predict_ws.cell(r, 5).value, # E: 実際のG数
-                predict_ws.cell(r, 6).value, # F: 実際の差枚
-                predict_ws.cell(r, 7).value, # G: 設定スコア
-                predict_ws.cell(r, 8).value, # H: 判定
-            ]
-            if isinstance(row_vals[0], datetime.datetime):
-                row_vals[0] = row_vals[0].strftime("%Y/%m/%d")
-            pred_history.append(" | ".join([str(x) if x is not None else "" for x in row_vals]))
+        for r in range(4, predict_ws.max_row + 1):
+            p_date = predict_ws.cell(r, 1).value
+            p_name = predict_ws.cell(r, 2).value
+            p_num = predict_ws.cell(r, 3).value
+            p_reason = predict_ws.cell(r, 4).value
+            p_g = predict_ws.cell(r, 5).value
+            p_diff = predict_ws.cell(r, 6).value
+            p_res = predict_ws.cell(r, 8).value
             
-    # 4. Load manual confirmation info (Trophy, events, SNS hints, etc.)
+            if p_date is None or p_num is None:
+                continue
+                
+            if isinstance(p_date, (datetime.datetime, datetime.date)):
+                pd_str = p_date.strftime("%Y/%m/%d")
+            else:
+                pd_str = str(p_date).strip()
+                
+            try:
+                p_num_int = int(str(p_num).strip())
+            except ValueError:
+                continue
+                
+            if p_num_int not in penalty_tracker:
+                penalty_tracker[p_num_int] = {'total': 0, 'wins': 0, 'consecutive_losses': 0}
+                
+            penalty_tracker[p_num_int]['total'] += 1
+            if str(p_res) == '〇':
+                penalty_tracker[p_num_int]['wins'] += 1
+                penalty_tracker[p_num_int]['consecutive_losses'] = 0
+            elif str(p_res) == '×':
+                penalty_tracker[p_num_int]['consecutive_losses'] += 1
+                
+            pred_history_lines.append(f"{pd_str} | 台#{p_num_int} ({p_name}) | 理由: {str(p_reason or '')[:25]} | G:{p_g} 差:{p_diff} | 判定:{p_res}")
+
+    consecutive_loss_warnings = []
+    for num, track in penalty_tracker.items():
+        if track['consecutive_losses'] >= 2:
+            consecutive_loss_warnings.append(f"⚠️ 台#{num}: 直近{track['consecutive_losses']}回連続で「×」判定中！(累計{track['wins']}/{track['total']}的中) ➔ 同一根拠での再推奨はペナルティ(-10〜-20点)適用！")
+
+    # --- Section 7: User Confirmation Info ---
     confirm_data = []
     if "確認情報" in wb.sheetnames:
         confirm_ws = wb["確認情報"]
-        confirm_data.append("### ユーザー入力の店舗確認情報 (公約・示唆・トロフィー等の一次情報) ###")
-        
         for r in range(2, confirm_ws.max_row + 1):
             row_vals = [confirm_ws.cell(r, c).value for c in range(1, confirm_ws.max_column + 1)]
             if not any(v is not None for v in row_vals):
                 continue
-                
-            row_date = None
-            other_texts = []
-            for val in row_vals:
-                if val is None:
-                    continue
-                if isinstance(val, (datetime.datetime, datetime.date)):
-                    row_date = val.strftime("%Y/%m/%d")
-                elif isinstance(val, str):
-                    val_clean = val.strip()
-                    # Match dates like YYYY/MM/DD or YYYY-MM-DD
-                    if re.match(r'^\d{4}/\d{2}/\d{2}$', val_clean) or re.match(r'^\d{4}-\d{2}-\d{2}$', val_clean):
-                        row_date = val_clean.replace("-", "/")
-                    else:
-                        if val_clean:
-                            other_texts.append(val_clean)
-                else:
-                    other_texts.append(str(val))
-                    
-            if row_date and other_texts:
-                confirm_data.append(f"  {row_date} : " + " / ".join(other_texts))
-            elif other_texts:
-                confirm_data.append(f"  (日付不明) : " + " / ".join(other_texts))
-    else:
-        confirm_data.append("  (入力情報なし)")
-        
+            r_str = " / ".join([str(v).strip() for v in row_vals if v is not None])
+            if r_str:
+                confirm_data.append(f"  - {r_str}")
+    if not confirm_data:
+        confirm_data.append("  (入力情報なし - データの周期性・ローテーション分析を主軸としてください)")
+
+    # --- Section 8: Today's Highlighted Results (Juggler High Score & TOP 5 Performance) ---
+    today_norm = str(target_date).strip().replace("-", "/")
+    today_recs = [r for r in all_records if r['date'] == today_norm]
+    if not today_recs and unique_dates:
+        today_recs = [r for r in all_records if r['date'] == unique_dates[-1]]
+
+    jug_keywords = ['ジャグラー', 'ジャグ', 'マイJ', 'ファンキー', 'アイム', 'ゴーゴー', 'ハッピー', 'ミラクル']
+    juggler_high_scores = [r for r in today_recs if any(k in r['machine_name'] for k in jug_keywords) and r['score'] >= 4.5]
+    juggler_high_score_lines = []
+    for r in juggler_high_scores:
+        juggler_high_score_lines.append(f"🌟 台#{r['machine_number']} ({r['machine_name']}): 最終スコア {r['score']} | G数 {r['g_games']}G | 差枚 {r['diff_coins']:+d}枚 | BB:{r['bb']} RB:{r['rb']}")
+
+    top5_recs = sorted(today_recs, key=lambda x: x['diff_coins'], reverse=True)[:5]
+    top5_lines = []
+    for i, r in enumerate(top5_recs, 1):
+        top5_lines.append(f"🏆 第{i}位 台#{r['machine_number']} ({r['machine_name']}): 差枚 {r['diff_coins']:+d}枚 | G数 {r['g_games']}G | スコア {r['score']}")
+
     wb.close()
-    
-    return (
-        "\n".join(dash_data) + "\n\n" + 
-        "\n".join(data_rows) + "\n\n" + 
-        "\n".join(confirm_data) + "\n\n" + 
-        "\n".join(pred_history)
-    )
+
+    context_text = f"""
+■ セクション1: 末尾別分析マトリクス（直近5開催）
+{chr(10).join(tail_matrix_lines)}
+
+■ セクション2: 台位置傾向割合
+{chr(10).join(position_lines)}
+
+■ セクション3: 機種別強さ・高設定投入回数
+{chr(10).join(mach_lines)}
+
+■ セクション4: 主要台番号別・直近5開催推移（G数/差枚/設定スコア）
+{chr(10).join(mach_history_lines[:30])}
+
+■ セクション5: 高設定履歴DB（前回高設定からの経過イベント数）
+{chr(10).join(high_setting_db_lines[:25])}
+
+■ セクション6: 過去AI予想答え合わせ＆連続×ペナルティ警告
+【直近の答え合わせ履歴】
+{chr(10).join(pred_history_lines[-20:])}
+
+【連続×ペナルティ適用リスト（安易な再推奨厳禁）】
+{chr(10).join(consecutive_loss_warnings) if consecutive_loss_warnings else "（現在、2回以上連続×の要警戒台はありません）"}
+
+■ セクション7: ユーザー入力の店舗確認情報（公約・示唆・SNS等の一次情報）
+{chr(10).join(confirm_data)}
+
+■ セクション8: 本日（{target_date}）の注目実績（ダッシュボード連動表示）
+【🌟 ジャグラー正解台一覧 (最終スコア4.5以上)】
+{chr(10).join(juggler_high_score_lines) if juggler_high_score_lines else "（本日スコア4.5以上のジャグラー該当台なし）"}
+
+【🏆 本日店舗実績 TOP 5 (差枚TOP5)】
+{chr(10).join(top5_lines) if top5_lines else "（実績データなし）"}
+"""
+    return context_text
+
 
 def run_gemini_analysis(api_key, context, target_date):
     import google.generativeai as genai
@@ -489,69 +617,117 @@ def run_gemini_analysis(api_key, context, target_date):
     
     d_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
     tomorrow_date = (d_obj + datetime.timedelta(days=1)).strftime("%Y/%m/%d")
-    
     prompt = f"""
-あなたはパチスロホールの設定配分を分析するプロのデータサイエンティストであり、月100万円以上を安定して稼ぐ現役パチプロ兼データアナリストです。
-提供されたホールの営業データ、および「過去のAI予想・答え合わせ履歴」「ユーザーが直接入力した店舗確認情報（公約や示唆、確定情報など）」から、店長の投入クセの傾向変化を学習した上で、明日の推奨狙い台を決定してください。
+あなたはパチスロホールの設定配分、店長心理、イベント周期、台番ローテーションを解読するプロのデータサイエンティスト兼現役パチプロです。
+提供された「Python自動集計による構造化統計データ」に基づき、次回イベント開催日における推奨狙い台（計10台）を定量スコアリングの上で決定してください。
 
+目的は、次回イベント開催日における高設定投入予想の精度を極限まで高めることです。
 一般ユーザー向けの解説は不要です。期待値を最大化するための分析のみを行ってください。
 
 ---
-【直近のデータ状況】
-分析対象日: {target_date} （このデータを本日追加しました）
-狙い対象日 (翌日): {tomorrow_date}
+【分析対象店舗の特性】
+店舗名：トワーズ大和深見店
+特徴：
+- 通常日ではなく、特定イベント日に設定投入が集中するホール
+- 主なイベント対象：
+  ① 特定末尾日（6日・16日・26日など「末尾6」の日）
+  ② 日ゾロ目の日（11日・22日）
+  ③ 月日ゾロ目の日（6月6日、7月7日、8月8日などの月日重なり日）
+- 「明日」ではなく、分析対象日（本日：{target_date}）より未来で最も近い【次回イベント開催予定日】を特定して予想すること
 
-以下に最新のダッシュボード値、蓄積用データの直近100台分のサマリー、ユーザー入力の最新店舗確認情報（公約やトロフィーなどの一次情報）、および過去30台分の「答え合わせ履歴（判定〇×）」を提供します。
+---
+【提供データ（Python自動集計・構造化データ）】
 {context}
 
 ---
-【最優先・分析ルール】
+【最重要分析ルール】
 
-① 一次情報（店舗確認情報）の最優先
-「店舗確認情報」にトロフィー、確定画面、SNS示唆、LINE示唆、イベント公約、演者来店などが入力されている場合、これはAI of 過去データ推測より優先される「絶対的事実」です。これらに合致する台（例: 全台系公約、並び公約など）がある場合は、最優先で狙い台として選定してください。
+1. 一次情報（店舗確認情報）の扱い
+一次情報（SNS示唆、公約、演者来店等）は毎回存在するわけではないため、絶対的判断基準ではなく「参考および周期補強要素（最大10点）」として扱うこと。データの周期性やローテーション分析を主軸とすること。
 
-② 荒波機種（スマスロ等）の補正
-からくりサーカス、ヴァルヴレイヴ、戦国乙女、チバリヨ、かぐや様、東京喰種、北斗、ゴッドイーター、モンキーターンなどは、差枚数だけで設定を判断せず、ゲーム数、初当たり、設定差のある要素（小役・示唆）を重視してください。3000G未満の大量出玉は「誤爆リスク」として評価し、据え置き期待度は下げてください。
+2. 出玉だけで高設定扱いしない
+特にスマスロ・荒波機種は大量出玉だけで高設定と判断しない。3000G未満の大量出玉は誤爆リスクとして補正すること。
 
-③ ノーマルタイプ（ジャグラー等）の補正
-ジャグラー、ハナハナ等のノーマル機は、差枚よりも「REG確率」「合算確率」「回転数」「ブドウ逆算値」「REG先行度合い」を最重視して判断してください。
+3. 過去に連続×となった台の再推奨ルール
+セクション6（答え合わせ履歴）で直近2回以上連続で「×」となっている台番号は、同一の根拠での再推奨を厳禁とする。再推奨する場合は、これまでと異なる明確な新根拠（周期到達、お詫び条件合致等）がある場合に限る。
 
-④ リスク評価とあいまいさの排除
-中間設定（設定4〜5）の可能性やヒキ強による誤爆リスクも必ず根拠内で考慮してください。「設定6濃厚」という安易な表現は禁止し、「設定5〜6期待」「高設定期待」などの堅実な表現を使用してください。
+4. 機種別の評価軸
+- ジャグラー・ノーマル系：REG確率、合算確率、回転数、REG先行、ブドウ逆算値、設定スコア4.5以上を重視。
+- スマスロ・AT系：G数（6,000G以上の高稼働は高設定評価）、差枚（+1,000枚以上）、初当たり、設定差要素、イベント対象機種かを重視。
 
-⑤ 店長心理・クセの分析
-店長の投入パターン（並び、全台系、据え置き、末尾、角、中央、ローテーション傾向）を分析し、店長の心理を考察してください。
+5. 安易な断定表現の禁止
+「設定6濃厚」「100%入る」などの安易な表現は禁止。「高設定期待」「設定5〜6期待」「本命候補」「抑え候補」などの堅実な表現を使用すること。
+
+---
+【100点満点スコアリング基準】
+
+各候補台を以下の基準で100点満点で定量評価してください。
+
+【加点項目（最大100点）】
+- 末尾・イベント周期との一致（月日ゾロ目・日ゾロ目・末尾6等）：最大20点
+- 台番ローテーション・周期到達率（高設定履歴DB）：最大20点
+- 店長配分クセ・位置特性（角、角2、中央、スライド、据え置き傾向）：最大15点
+- 直近不発からのお詫び・リベンジ投入期待：最大15点
+- 機種扱いの強さ・本気度：最大15点
+- 一次情報（店舗確認情報・SNS示唆・公約等）の一致・補強：最大10点
+- 過去AI予想の答え合わせ精度・相性：最大5点
+
+【減点項目】
+- 低G数の誤爆疑い：-5〜-20点
+- 根拠が出玉のみ：-10〜-25点
+- 直近で連続×判定を受けている台の安易な再推：-10〜-20点
+- 店舗傾向・クセとの矛盾：-10〜-30点
+
+---
+【ランク判定ルール】
+※通算勝率はS・Aランクのみで計算されるため、基準を厳格に適用してください。
+- 【Sランク】（90点以上）：根拠が3つ以上重複する超本命台。
+- 【Aランク】（75〜89点）：根拠が2つ以上重複する強狙い台。
+- 【Bランク】（60〜74点）：根拠はあるが確証が弱い抑え台（参考枠）。
+- 【Cランク】（59点以下）：選定不可。
+
+---
+【出力台数（絶対厳守）】
+以下の合計10台を必ず選定してください。
+- ジャグラー系（ノーマルタイプ）：5台
+- スマスロ・その他：5台
+※S・Aランクが不足する場合は、無理に高ランクを付けず、Bランクとして出力してください。
 
 ---
 【絶対厳守の出力フォーマット】
-以下の構成で日本語で出力してください。スプレッドシートやドキュメントにそのままコピーできる構成とします。
 
 ① 【AI】営業評価と店長の心理総括
-冒頭に、必ず明日の参戦評価として以下のいずれか1つを大見出しで明記してください。
-- **【明日の参戦評価：行ける（勝負すべき日）】**
-- **【明日の参戦評価：狙い目だけ打ちに行く（ピンポイント狙い）】**
-- **【明日の参戦評価：行く価値無し（見送り推奨）】**
-その後に、最新日の結果を踏まえた店長の意図（還元・回収）の考察を1分で読める文量で書いてください。
+【次回イベントの参戦評価：行ける（勝負すべき日）】
+（※選択肢：「行ける（勝負すべき日）」「狙い目だけ打ちに行く（ピンポイント狙い）」「行く価値無し（見送り推奨）」）
+次回イベント予測日：YYYY/MM/DD（イベント特徴：例 月日ゾロ目の日 / 末尾6の日 / 日ゾロ目の日）
 
-② 機種別・設定投入の「本気度」検証
-「今、最も設定が狙える本命機種」と「回収用の死に機種」のリストアップと理由。
+本日の営業結果を踏まえ、店長の意図（還元・回収・フェイク・スライド・末尾寄せ）を簡潔に分析してください。
 
-③ Excel予測スコアの「妥当性検証レポート」
-現在の予測スコアが実際の店舗傾向と合っているかの検証。ズレの指摘。
+② 機種別・設定投入の本気度検証
+- 本命機種
+- 準本命機種
+- 回収用・危険機種
+- ジャグラー系の扱い
+- スマスロ系の扱い
 
-④ AI独自の次回（明日）の推奨狙い目台（全機種TOP5 ＆ ジャグラーTOP5）
-表面的なスコアだけでなく、「周期」「機種の強さ」「確認情報の事実」を複合して補正した推奨台と根拠。
+③ 店長の投入クセ・周期法則
+- 強い末尾と次回巡回末尾の予測（月日ゾロ目・日ゾロ目含む）
+- 角・角2・中央の配分傾向
+- 据え置き・スライド・お詫び投入の分析
+- 前回予想とのズレ・反省点
+
+④ AI独自の次回推奨狙い台
+全機種TOP5とジャグラーTOP5を分けて解説してください。各台について【点数・ランク・最重要根拠・リスク要因】を明記すること。
 
 ⑤ 【AI】予想・答え合わせ コピペ用テーブル
-推奨狙い目台（全機種5台 ＋ ジャグラー5台 ＝ 計10台）を、以下のMarkdown表形式で出力してください。
-余計なテキストを挟まず、必ず表をそのまま出力すること。
-日付には結果日（＝狙い日：{tomorrow_date}）を記入すること。
-
-★重要★: 推奨度の強さを可視化するため、「予想・狙い根拠」の文頭には必ず【推奨Sランク - 95点】、【推奨Aランク - 80点】、【推奨Bランク - 65点】のように、推奨ランク（S/A/B）と100点満点での評価スコアを記載してください。期待値の低い台はBランク以下で表現し、自信のある台はS〜Aランクにしてください。
+以下のMarkdown表形式で出力してください。日付には必ず【次回イベント予定日】を記入すること。
 
 | 日付 | 機種名 | 台番号 | 予想・狙い根拠 |
 | --- | --- | --- | --- |
-| {tomorrow_date} | [機種名] | [台番号] | 【推奨[S/A/B]ランク - [点数]点】[具体的な数値や確認情報を交えた狙い根拠] |
+| YYYY/MM/DD | 機種名 | 台番号 | 【推奨[S/A/B]ランク - [点数]点】根拠：[重複根拠]。リスク：[リスク要因]。 |
+
+⑥ 本日（次回イベント）で最も自信があるTOP 3台
+10台の中から、最も信頼度が高いTOP 3台を抽出し、その理由を短く書いて締めくくってください。
 """
     
     for model_name in models_to_try:
@@ -576,58 +752,60 @@ def run_gemini_analysis(api_key, context, target_date):
 
 def write_ai_results_to_excel(excel_path, target_date, ai_text):
     d_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
-    tomorrow_date = (d_obj + datetime.timedelta(days=1)).strftime("%Y/%m/%d")
-    tomorrow_date_val = datetime.datetime.strptime(tomorrow_date, "%Y/%m/%d")
     
     wb = openpyxl.load_workbook(excel_path, data_only=False)
     
     # 1. Parse AI recommendations from Markdown table
-    table_pattern = r'\|?\s*(?:\d{4}/\d{2}/\d{2})\s*\|.*'
-    table_lines = re.findall(table_pattern, ai_text)
-    
     rows_to_insert = []
-    for line in table_lines:
-        cells = [c.strip() for c in line.split("|")]
-        if len(cells) > 0 and cells[0] == "":
-            cells.pop(0)
-        if len(cells) > 0 and cells[-1] == "":
-            cells.pop()
-            
-        if len(cells) >= 4:
-            date_str = cells[0]
-            machine_name = cells[1]
-            try:
-                machine_num = int(cells[2])
-            except ValueError:
-                machine_num = cells[2]
-            reason = cells[3]
-            
-            if "機種名" in machine_name or "---" in machine_name:
-                continue
+    lines = ai_text.splitlines()
+    for line in lines:
+        if "|" in line:
+            cells = [c.strip() for c in line.split("|")]
+            if len(cells) > 0 and cells[0] == "":
+                cells.pop(0)
+            if len(cells) > 0 and cells[-1] == "":
+                cells.pop()
                 
-            rows_to_insert.append((date_str, machine_name, machine_num, reason))
-            
+            if len(cells) >= 4:
+                date_str = cells[0]
+                machine_name = cells[1]
+                try:
+                    machine_num = int(cells[2])
+                except ValueError:
+                    machine_num = cells[2]
+                reason = cells[3]
+                
+                if "機種名" in machine_name or "---" in machine_name or "日付" in date_str:
+                    continue
+                    
+                rows_to_insert.append((date_str, machine_name, machine_num, reason))
+                
     if rows_to_insert:
         ai_ws = wb['【AI】予想・答え合わせ']
         
+        first_date_str = rows_to_insert[0][0]
+        try:
+            pred_target_dt = datetime.datetime.strptime(first_date_str, "%Y/%m/%d")
+        except ValueError:
+            pred_target_dt = d_obj + datetime.timedelta(days=1)
+            
+        pred_target_str = pred_target_dt.strftime("%Y/%m/%d")
+        
         # --- PREVENT DUPLICATE RECOMMENDATIONS ---
-        # Scan and remove any existing rows for tomorrow_date_val to prevent infinite duplicates
         rows_to_delete = []
         for r in range(4, ai_ws.max_row + 1):
             cell_val = ai_ws.cell(r, 1).value
             normalized_cell_val = normalize_date_string(cell_val)
-            normalized_tomorrow = normalize_date_string(tomorrow_date_val)
-            if normalized_cell_val == normalized_tomorrow:
+            normalized_pred_target = normalize_date_string(pred_target_dt)
+            if normalized_cell_val == normalized_pred_target:
                 rows_to_delete.append(r)
                 
         if rows_to_delete:
-            print(f"Removing {len(rows_to_delete)} duplicate prediction rows in 【AI】予想・答え合わせ for date {tomorrow_date}...")
-            # Delete in reverse order to keep indices correct
+            print(f"Removing {len(rows_to_delete)} duplicate prediction rows in 【AI】予想・答え合わせ for date {pred_target_str}...")
             for r in reversed(rows_to_delete):
                 ai_ws.delete_rows(r)
         # ------------------------------------------
         
-        # Recalculate last row after deletion
         last_data_row = 3
         for r in range(ai_ws.max_row, 3, -1):
             val = ai_ws.cell(r, 1).value
@@ -636,12 +814,16 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
                 break
         append_start_row = last_data_row + 1
             
-        print(f"Writing {len(rows_to_insert)} recommendation rows starting at Row {append_start_row}...")
+        print(f"Writing {len(rows_to_insert)} recommendation rows for target date {pred_target_str} starting at Row {append_start_row}...")
         for i, row_data in enumerate(rows_to_insert):
             curr_r = append_start_row + i
             
-            # Write date and format
-            dt_cell = ai_ws.cell(curr_r, 1, tomorrow_date_val)
+            try:
+                r_dt = datetime.datetime.strptime(row_data[0], "%Y/%m/%d")
+            except ValueError:
+                r_dt = pred_target_dt
+                
+            dt_cell = ai_ws.cell(curr_r, 1, r_dt)
             dt_cell.number_format = 'yyyy/mm/dd'
             
             ai_ws.cell(curr_r, 2, row_data[1])
@@ -650,10 +832,11 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
     else:
         print("Warning: Could not parse recommendation table from AI response.")
         
-    # 2. PERFORM PRE-CALCULATED LOOKUPS (Excel speed-up)
+    # 2. PERFORM PRE-CALCULATED LOOKUPS & AUTOMATIC UNMATCHED PREDICTION AUTO-LINKING
     print("Pre-calculating answer key data (lookup actual results)...")
     data_ws = wb['【データ】蓄積用']
     accumulated_db = {}
+    data_dates = set()
     for r in range(2, data_ws.max_row + 1):
         date_val = data_ws.cell(r, 1).value
         mach_num = data_ws.cell(r, 3).value
@@ -663,6 +846,7 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
         
         if date_val is not None:
             date_str = normalize_date_string(date_val)
+            data_dates.add(date_str)
             try:
                 m_num = int(str(mach_num).strip())
                 accumulated_db[(date_str, m_num)] = (g_games, diff_coins, setting_score)
@@ -670,8 +854,21 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
                 continue
                 
     ai_ws = wb['【AI】予想・答え合わせ']
+    
+    current_target_norm = normalize_date_string(d_obj)
+    for r in range(4, ai_ws.max_row + 1):
+        pred_date_val = ai_ws.cell(r, 1).value
+        pred_g_val = ai_ws.cell(r, 5).value
+        pred_diff_val = ai_ws.cell(r, 6).value
+        
+        if pred_date_val is not None and (pred_g_val is None or pred_g_val == "") and (pred_diff_val is None or pred_diff_val == ""):
+            pred_date_norm = normalize_date_string(pred_date_val)
+            if pred_date_norm not in data_dates and pred_date_norm <= current_target_norm:
+                print(f"Auto-linking un-answered prediction Row {r} (was {pred_date_norm}) to current result date {current_target_norm}!")
+                dt_c = ai_ws.cell(r, 1, d_obj)
+                dt_c.number_format = 'yyyy/mm/dd'
+
     rewritten_count = 0
-    # Scan all prediction rows (4 to max_row) and replace formulas with static values
     for r in range(4, ai_ws.max_row + 1):
         date_val = ai_ws.cell(r, 1).value
         mach_val = ai_ws.cell(r, 3).value
@@ -685,109 +882,76 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
                 if key in accumulated_db:
                     g_games, diff_coins, setting_score = accumulated_db[key]
                     
-                    try:
-                        coins_int = int(str(diff_coins).replace(",", "").replace("+", "").strip())
-                    except ValueError:
-                        coins_int = 0
-                        
-                    score_val = 0
-                    if setting_score is not None and setting_score != "":
-                        try:
-                            score_val = float(str(setting_score).strip())
-                        except ValueError:
-                            pass
-                            
-                    # Determine status (〇/×)
-                    if "ジャグラー" in m_name:
-                        status = "〇" if (score_val >= 4.5 and coins_int >= 500) else "×"
+                    ai_ws.cell(r, 5, g_games)
+                    ai_ws.cell(r, 6, diff_coins)
+                    ai_ws.cell(r, 7, setting_score)
+                    
+                    is_jug = any(k in m_name for k in ['ジャグラー', 'ジャグ', 'マイJ', 'ファンキー', 'アイム', 'ゴーゴー', 'ハッピー', 'ミラクル'])
+                    if is_jug:
+                        if g_games is None or g_games == 0 or g_games == "":
+                            res = "-"
+                        else:
+                            try:
+                                sc_v = float(setting_score) if setting_score is not None else 0
+                            except ValueError:
+                                sc_v = 0
+                            try:
+                                df_v = int(diff_coins) if diff_coins is not None else -9999
+                            except ValueError:
+                                df_v = -9999
+                            res = "〇" if (sc_v >= 4.5 and df_v >= 500) else "×"
                     else:
-                        status = "〇" if coins_int >= 1000 else "×"
+                        try:
+                            df_v = int(diff_coins) if diff_coins is not None else -9999
+                        except ValueError:
+                            df_v = -9999
+                        try:
+                            gm_v = int(g_games) if g_games is not None else 0
+                        except ValueError:
+                            gm_v = 0
+                        res = "〇" if (df_v >= 1000 or gm_v >= 6000) else "×"
                         
-                    safe_write_cell(ai_ws, r, 5, g_games)
-                    safe_write_cell(ai_ws, r, 6, diff_coins)
-                    safe_write_cell(ai_ws, r, 7, setting_score if setting_score is not None else "")
-                    safe_write_cell(ai_ws, r, 8, status)
-                    ai_ws.cell(r, 1).number_format = 'yyyy/mm/dd'
+                    ai_ws.cell(r, 8, res)
                     rewritten_count += 1
             except ValueError:
                 continue
+
     print(f"Pre-calculated & optimized {rewritten_count} cells in 【AI】予想・答え合わせ.")
 
-    # 3. Write summary narrative into 【AI】総括 sheet
-    sum_sheet_name = '【AI】総括'
-    actual_sheet_name = None
-    for name in wb.sheetnames:
-        clean_name = name.replace(" ", "").replace("　", "")
-        if "AI" in clean_name and "総括" in clean_name:
-            actual_sheet_name = name
-            break
-            
-    if actual_sheet_name and actual_sheet_name in wb.sheetnames:
-        sum_ws = wb[actual_sheet_name]
-        print(f"Found existing summary sheet: '{actual_sheet_name}'")
+    # 3. Create or Update Summary sheet (Consistently writing to Column E (5) & Column F (6))
+    summary_ws = None
+    if '【AI】総括' in wb.sheetnames:
+        summary_ws = wb['【AI】総括']
     else:
-        sum_ws = wb.create_sheet(sum_sheet_name)
-        print(f"Created new summary sheet: '{sum_sheet_name}'")
+        summary_ws = wb.create_sheet('【AI】総括')
+        summary_ws.cell(1, 5, "日付 (結果日)")
+        summary_ws.cell(1, 6, "AIからの総括 (コピペ用)")
         
-    # Find actual max row in Col E or F
-    real_max_sum_row = 1
-    for r in range(sum_ws.max_row, 0, -1):
-        val_e = sum_ws.cell(r, 5).value
-        val_f = sum_ws.cell(r, 6).value
-        if not is_empty_or_formula(val_e) or not is_empty_or_formula(val_f):
-            real_max_sum_row = r
+    last_sum_r = 1
+    for r in range(summary_ws.max_row, 0, -1):
+        v5 = summary_ws.cell(r, 5).value
+        v6 = summary_ws.cell(r, 6).value
+        if not is_empty_or_formula(v5) or not is_empty_or_formula(v6):
+            last_sum_r = r
             break
             
-    next_sum_row = real_max_sum_row + 2
-    if real_max_sum_row == 1 and sum_ws.cell(1, 5).value is None and sum_ws.cell(1, 6).value is None:
-        next_sum_row = 1
-        
-    # Clean the summary text for Excel (strictly 1 line, no paragraphs)
-    text_lines = []
-    for line in ai_text.split("\n"):
-        line_strip = line.strip()
-        if line_strip.startswith("|") or line_strip.startswith("---") or line_strip.startswith("=== AI"):
-            continue
-        if line_strip:
-            text_lines.append(line_strip)
-    single_line_summary = "".join(text_lines)
-    
-    # Write target date (HTML date) into Column E (5) and formatted text in F (6)
-    dt_sum_cell = safe_write_cell(sum_ws, next_sum_row, 5, d_obj)
-    if dt_sum_cell:
-        dt_sum_cell.number_format = 'yyyy/mm/dd'
-        
-    safe_write_cell(sum_ws, next_sum_row, 6, single_line_summary)
+    found_date_row = None
+    for r in range(1, last_sum_r + 1):
+        c_val = summary_ws.cell(r, 5).value
+        if normalize_date_string(c_val) == normalize_date_string(d_obj):
+            found_date_row = r
+            break
+            
+    target_sum_row = found_date_row if found_date_row else last_sum_r + 1
+    dt_c = summary_ws.cell(target_sum_row, 5, d_obj)
+    dt_c.number_format = 'yyyy/mm/dd'
+    summary_ws.cell(target_sum_row, 6, ai_text)
     
     safe_save_workbook(wb, excel_path)
-    print(f"AI Analysis results written successfully into sheets.")
-    
-    # 4. Save the RAW rich formatted text (with paragraphs) to a JSON file
-    rich_summaries = {}
-    if os.path.exists(RICH_SUMMARIES_FILE):
-        try:
-            with open(RICH_SUMMARIES_FILE, "r", encoding="utf-8") as f:
-                rich_summaries = json.load(f)
-        except Exception:
-            rich_summaries = {}
-            
-    # Clean markdown tables only, preserving paragraphs and formatting
-    clean_lines = []
-    for line in ai_text.split("\n"):
-        line_strip = line.strip()
-        if line_strip.startswith("|") or line_strip.startswith("---"):
-            continue
-        clean_lines.append(line)
-        
-    # Normalize target_date to match standard format
-    norm_target_date = normalize_date_string(target_date)
-    rich_summaries[norm_target_date] = "\n".join(clean_lines).strip()
-    
-    with open(RICH_SUMMARIES_FILE, "w", encoding="utf-8") as f:
-        json.dump(rich_summaries, f, ensure_ascii=False, indent=2)
-    print(f"Saved rich paragraph summary for Web dashboard to: {RICH_SUMMARIES_FILE}")
+    wb.close()
+    print("AI Analysis results written successfully into sheets.")
 
-def generate_html_dashboard(excel_path, store_name):
+def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
     """
     Reads data from the Excel workbook and generates a fully interactive, lightweight
     HTML dashboard with rich CSS styling, search filters, and statistics.
@@ -808,7 +972,7 @@ def generate_html_dashboard(excel_path, store_name):
                 real_max = r
                 break
         
-        start_r = max(2, real_max - 1500)
+        start_r = max(2, real_max - 15000)
         for r in range(start_r, real_max + 1):
             dt_val = ws.cell(r, 1).value
             dt_str = normalize_date_string(dt_val)
@@ -823,7 +987,8 @@ def generate_html_dashboard(excel_path, store_name):
                 "rb": int(ws.cell(r, 7).value or 0),
                 "comb_ratio": str(ws.cell(r, 8).value or "-"),
                 "bb_ratio": str(ws.cell(r, 9).value or "-"),
-                "rb_ratio": str(ws.cell(r, 10).value or "-")
+                "rb_ratio": str(ws.cell(r, 10).value or "-"),
+                "score": float(ws.cell(r, 29).value) if ws.cell(r, 29).value is not None and str(ws.cell(r, 29).value).replace('.','',1).isdigit() else 0.0
             })
             
     # 2. Read AI recommendations
@@ -946,11 +1111,11 @@ def generate_html_dashboard(excel_path, store_name):
         <!-- Stats Overview Grid -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="p-4 md:p-6 glass rounded-2xl text-center md:text-left">
-                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">本日総差枚</h3>
+                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider" id="stat-card1-title">本日総差枚</h3>
                 <p id="stat-total-diff" class="text-xl md:text-2xl font-bold mt-2 text-white">0 枚</p>
             </div>
             <div class="p-4 md:p-6 glass rounded-2xl text-center md:text-left">
-                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">本日平均差枚</h3>
+                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider" id="stat-card2-title">本日平均差枚</h3>
                 <p id="stat-avg-diff" class="text-xl md:text-2xl font-bold mt-2 text-white">0 枚</p>
             </div>
             <div class="p-4 md:p-6 glass rounded-2xl text-center md:text-left">
@@ -979,7 +1144,7 @@ def generate_html_dashboard(excel_path, store_name):
         <section class="p-6 glass rounded-2xl space-y-4">
             <div class="flex items-center gap-2">
                 <span class="p-1.5 bg-indigo-500/10 text-indigo-400 rounded-lg text-sm">📊</span>
-                <h2 class="text-xl font-bold font-semibold">主要機種の差枚状況ランキング（平均値）</h2>
+                <h2 class="text-xl font-bold font-semibold" id="chart-section-title">主要機種の差枚状況ランキング（平均値）</h2>
             </div>
             <div class="h-80 md:h-96 w-full">
                 <canvas id="chart-machines"></canvas>
@@ -1003,7 +1168,8 @@ def generate_html_dashboard(excel_path, store_name):
                                 <tr class="border-b border-slate-800 text-slate-400">
                                     <th class="py-2 px-2">機種名</th>
                                     <th class="py-2 px-2">台番</th>
-                                    <th class="py-2 px-2">根拠</th>
+                                    <th class="py-2 px-2 text-center">ランク</th>
+                                    <th class="py-2 px-2">予想・狙い根拠</th>
                                 </tr>
                             </thead>
                             <tbody id="pred-juggler-body" class="divide-y divide-slate-800/50">
@@ -1022,7 +1188,8 @@ def generate_html_dashboard(excel_path, store_name):
                                 <tr class="border-b border-slate-800 text-slate-400">
                                     <th class="py-2 px-2">機種名</th>
                                     <th class="py-2 px-2">台番</th>
-                                    <th class="py-2 px-2">根拠</th>
+                                    <th class="py-2 px-2 text-center">ランク</th>
+                                    <th class="py-2 px-2">予想・狙い根拠</th>
                                 </tr>
                             </thead>
                             <tbody id="pred-others-body" class="divide-y divide-slate-800/50">
@@ -1034,51 +1201,113 @@ def generate_html_dashboard(excel_path, store_name):
             </div>
         </section>
 
-        <!-- ④ 前日のAI予測答え合わせ (Segmented) -->
-        <section class="p-6 glass rounded-2xl space-y-4">
+        <!-- ④ AI予測答え合わせ ＆ 当日実績分析 -->
+        <section class="p-6 glass rounded-2xl space-y-6">
             <div class="flex items-center gap-2">
                 <span class="p-1.5 bg-amber-500/10 text-amber-400 rounded-lg text-sm">📈</span>
-                <h2 class="text-xl font-bold">前日のAI予測答え合わせ</h2>
+                <h2 class="text-xl font-bold">AI予測答え合わせ ＆ 店舗実績検証</h2>
             </div>
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <!-- Juggler Section -->
-                <div class="space-y-2">
-                    <h3 class="text-emerald-400 font-bold text-sm border-b border-emerald-500/30 pb-1">🤡 ジャグラー系 結果</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse text-xs">
-                            <thead>
-                                <tr class="border-b border-slate-800 text-slate-400">
-                                    <th class="py-2 px-2">台番 (機種)</th>
-                                    <th class="py-2 px-2">差枚</th>
-                                    <th class="py-2 px-2">設定スコア</th>
-                                    <th class="py-2 px-2">結果</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ans-juggler-body" class="divide-y divide-slate-800/50">
-                                <!-- Populated dynamically -->
-                            </tbody>
-                        </table>
+            <!-- ROW 1: Juggler Answer (Left) vs Juggler High Setting List Score >= 4.5 (Right) -->
+            <div class="space-y-2">
+                <h3 class="text-emerald-400 font-bold text-base border-b border-emerald-500/30 pb-1 flex items-center justify-between">
+                    <span>🤡 ジャグラー系 検証</span>
+                    <span class="text-xs font-normal text-slate-400">（左: AI予想結果 / 右: 実際の高設定挙動台）</span>
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Juggler AI Prediction Answers -->
+                    <div class="bg-slate-900/40 p-4 rounded-xl border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-semibold text-emerald-300">【AI予測 答え合わせ】</h4>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="border-b border-slate-800 text-slate-400">
+                                        <th class="py-2 px-1">台番 (機種)</th>
+                                        <th class="py-2 px-1 text-center">ランク</th>
+                                        <th class="py-2 px-1 text-right">${'差枚' if has_diff_coins else 'G数'}</th>
+                                        <th class="py-2 px-1 text-center">スコア</th>
+                                        <th class="py-2 px-1 text-center">結果</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ans-juggler-body" class="divide-y divide-slate-800/50">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Juggler Actual High Setting List (Score >= 4.5) -->
+                    <div class="bg-slate-900/40 p-4 rounded-xl border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-semibold text-amber-300 flex items-center justify-between">
+                            <span>【ジャグラー正解台一覧】(最終スコア 4.5以上)</span>
+                            <span id="jug-high-count" class="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full">0台</span>
+                        </h4>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="border-b border-slate-800 text-slate-400">
+                                        <th class="py-2 px-1">台番 (機種)</th>
+                                        <th class="py-2 px-1 text-right">G数 (REG)</th>
+                                        <th class="py-2 px-1 text-right">${'差枚' if has_diff_coins else '合算'}</th>
+                                        <th class="py-2 px-1 text-center">スコア</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="juggler-high-score-body" class="divide-y divide-slate-800/50">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Others/Smaslot Section -->
-                <div class="space-y-2">
-                    <h3 class="text-cyan-400 font-bold text-sm border-b border-cyan-500/30 pb-1">⚡ スマスロ・その他 結果</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse text-xs">
-                            <thead>
-                                <tr class="border-b border-slate-800 text-slate-400">
-                                    <th class="py-2 px-2">台番 (機種)</th>
-                                    <th class="py-2 px-2">差枚</th>
-                                    <th class="py-2 px-2">設定スコア</th>
-                                    <th class="py-2 px-2">結果</th>
-                                </tr>
-                            </thead>
-                            <tbody id="ans-others-body" class="divide-y divide-slate-800/50">
-                                <!-- Populated dynamically -->
-                            </tbody>
-                        </table>
+            <!-- ROW 2: Other/Smart Slot Answer (Left) vs Store Top 5 Performance (Right) -->
+            <div class="space-y-2 pt-2 border-t border-slate-800/60">
+                <h3 class="text-cyan-400 font-bold text-base border-b border-cyan-500/30 pb-1 flex items-center justify-between">
+                    <span>⚡ スマスロ・その他 検証 ＆ TOP5</span>
+                    <span class="text-xs font-normal text-slate-400">（左: AI予想結果 / 右: 当日実績TOP5）</span>
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Others AI Prediction Answers -->
+                    <div class="bg-slate-900/40 p-4 rounded-xl border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-semibold text-cyan-300">【AI予測 答え合わせ】</h4>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="border-b border-slate-800 text-slate-400">
+                                        <th class="py-2 px-1">台番 (機種)</th>
+                                        <th class="py-2 px-1 text-center">ランク</th>
+                                        <th class="py-2 px-1 text-right">${'差枚' if has_diff_coins else 'G数'}</th>
+                                        <th class="py-2 px-1 text-center">スコア</th>
+                                        <th class="py-2 px-1 text-center">結果</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ans-others-body" class="divide-y divide-slate-800/50">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Store Top 5 Performance -->
+                    <div class="bg-slate-900/40 p-4 rounded-xl border border-slate-800 space-y-2">
+                        <h4 class="text-xs font-semibold text-indigo-300" id="top-5-title">
+                            【${'本日差枚 TOP5' if has_diff_coins else '本日回転数 TOP5'}】
+                        </h4>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="border-b border-slate-800 text-slate-400">
+                                        <th class="py-2 px-1">順位 / 台番 (機種)</th>
+                                        <th class="py-2 px-1 text-right">G数</th>
+                                        <th class="py-2 px-1 text-right">${'差枚' if has_diff_coins else 'スコア'}</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="top-performance-body" class="divide-y divide-slate-800/50">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1119,12 +1348,19 @@ def generate_html_dashboard(excel_path, store_name):
 
     <!-- Embedding JSON Data -->
     <script>
+        const HAS_DIFF_COINS = {'true' if has_diff_coins else 'false'};
         const rawRecords = {json.dumps(records, ensure_ascii=False)};
         const rawPredictions = {json.dumps(predictions, ensure_ascii=False)};
         const rawSummaries = {json.dumps(summaries, ensure_ascii=False)};
         
         let machineChart = null;
-        Chart.register(ChartDataLabels);
+        if (typeof Chart !== 'undefined' && typeof ChartDataLabels !== 'undefined') {{
+            try {{
+                Chart.register(ChartDataLabels);
+            }} catch (e) {{
+                console.warn('ChartDataLabels warning:', e);
+            }}
+        }}
 
         document.addEventListener('DOMContentLoaded', () => {{
             initializeDashboard();
@@ -1151,6 +1387,18 @@ def generate_html_dashboard(excel_path, store_name):
             }}
             
             calculateOverallAIAccuracy();
+        }}
+
+                function extractRankBadge(reasonStr) {{
+            if (!reasonStr) return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
+            if (reasonStr.includes('推奨Sランク') || reasonStr.includes('Sランク')) {{
+                return '<span class="px-2 py-0.5 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full font-bold text-[11px]">S</span>';
+            }} else if (reasonStr.includes('推奨Aランク') || reasonStr.includes('Aランク')) {{
+                return '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full font-bold text-[11px]">A</span>';
+            }} else if (reasonStr.includes('推奨Bランク') || reasonStr.includes('Bランク')) {{
+                return '<span class="px-2 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full font-bold text-[11px]">B</span>';
+            }}
+            return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
         }}
 
         function isJugglerMachine(name) {{
@@ -1182,21 +1430,44 @@ def generate_html_dashboard(excel_path, store_name):
             document.getElementById('stat-avg-diff').textContent = avgDiff.toLocaleString() + ' 枚';
             document.getElementById('stat-win-rate').textContent = winRate + '%';
 
-            // 2. Load AI Summary text (Markdown render!)
+            // 2. Load AI Summary text (Markdown render & keep ①, ②, ③ and ⑥, stripping ④ and ⑤!)
             const summaryObj = rawSummaries.find(s => s.date === targetDate);
-            if (summaryObj) {{
-                document.getElementById('ai-summary-text').innerHTML = marked.parse(summaryObj.text);
+            if (summaryObj && summaryObj.text) {{
+                let cleanText = summaryObj.text;
+                // If text contains ④ and ⑥, strip out ④ and ⑤ between them, keeping ①, ②, ③ and ⑥
+                const index4 = cleanText.search(/(④|4\\.|AI独自の次回推奨狙い台)/);
+                const index6 = cleanText.search(/(⑥|6\\.|最も自信があるTOP)/);
+                
+                if (index4 !== -1 && index6 !== -1 && index6 > index4) {{
+                    const part1 = cleanText.substring(0, index4).trim();
+                    const part2 = cleanText.substring(index6).trim();
+                    cleanText = part1 + '
+
+' + part2;
+                }} else if (index4 !== -1) {{
+                    cleanText = cleanText.substring(0, index4).trim();
+                }}
+                
+                document.getElementById('ai-summary-text').innerHTML = marked.parse(cleanText);
             }} else {{
                 document.getElementById('ai-summary-text').innerHTML = '<p class="text-slate-500">この日のAI営業総括データはありません。</p>';
             }}
-
-            // 3. Load Predictions for the next day (Segmented Juggler vs Others & Deduplicated!)
-            const d = new Date(targetDate);
-            d.setDate(d.getDate() + 1);
-            const tomorrowStr = d.getFullYear() + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getDate()).padStart(2, '0');
-            
+            // 3. Load Predictions for the next event day (Segmented Juggler vs Others & Deduplicated!)
             const dedupedPredictions = deduplicatePredictions(rawPredictions);
-            const filteredPredictions = dedupedPredictions.filter(p => p.date === tomorrowStr);
+            const predictionDates = [...new Set(dedupedPredictions.map(p => p.date))].sort();
+            let nextEventDate = predictionDates.find(dStr => dStr > targetDate);
+            if (!nextEventDate && predictionDates.length > 0) {{
+                nextEventDate = predictionDates[predictionDates.length - 1];
+            }}
+            
+            const nextEventTitle = document.getElementById('next-event-title');
+            if (nextEventTitle && nextEventDate) {{
+                nextEventTitle.textContent = `次回（${{nextEventDate}}）のAI推奨狙い目台`;
+            }} else if (nextEventTitle) {{
+                nextEventTitle.textContent = '次回イベント推奨台';
+            }}
+            
+            const filteredPredictions = nextEventDate ? dedupedPredictions.filter(p => p.date === nextEventDate) : [];
             
             const predJugglerBody = document.getElementById('pred-juggler-body');
             const predOthersBody = document.getElementById('pred-others-body');
@@ -1207,14 +1478,16 @@ def generate_html_dashboard(excel_path, store_name):
             const otherPredictions = filteredPredictions.filter(p => !isJugglerMachine(p.name)).slice(0, 5);
             
             if (jugPredictions.length === 0) {{
-                predJugglerBody.innerHTML = '<tr><td colspan="3" class="py-3 text-center text-slate-500">ジャグラー推奨台はありません。</td></tr>';
+                predJugglerBody.innerHTML = '<tr><td colspan="4" class="py-3 text-center text-slate-500">ジャグラー推奨台はありません。</td></tr>';
             }} else {{
                 jugPredictions.forEach(p => {{
                     const tr = document.createElement('tr');
                     tr.className = 'hover:bg-slate-800/30';
+                    const rankBadge = extractRankBadge(p.reason);
                     tr.innerHTML = `
                         <td class="py-2.5 px-2 font-semibold text-slate-200">${{p.name}}</td>
                         <td class="py-2.5 px-2 text-emerald-400 font-bold font-mono">${{p.number}}</td>
+                        <td class="py-2.5 px-2 text-center">${{rankBadge}}</td>
                         <td class="py-2.5 px-2 text-xs text-slate-300">${{p.reason}}</td>
                     `;
                     predJugglerBody.appendChild(tr);
@@ -1222,14 +1495,16 @@ def generate_html_dashboard(excel_path, store_name):
             }}
 
             if (otherPredictions.length === 0) {{
-                predOthersBody.innerHTML = '<tr><td colspan="3" class="py-3 text-center text-slate-500">スマスロ・その他推奨台はありません。</td></tr>';
+                predOthersBody.innerHTML = '<tr><td colspan="4" class="py-3 text-center text-slate-500">スマスロ・その他推奨台はありません。</td></tr>';
             }} else {{
                 otherPredictions.forEach(p => {{
                     const tr = document.createElement('tr');
                     tr.className = 'hover:bg-slate-800/30';
+                    const rankBadge = extractRankBadge(p.reason);
                     tr.innerHTML = `
                         <td class="py-2.5 px-2 font-semibold text-slate-200">${{p.name}}</td>
                         <td class="py-2.5 px-2 text-cyan-400 font-bold font-mono">${{p.number}}</td>
+                        <td class="py-2.5 px-2 text-center">${{rankBadge}}</td>
                         <td class="py-2.5 px-2 text-xs text-slate-300">${{p.reason}}</td>
                     `;
                     predOthersBody.appendChild(tr);
@@ -1274,16 +1549,18 @@ def generate_html_dashboard(excel_path, store_name):
                 
                 const resultBadge = finalResult === '〇' ? '<span class="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 text-[10px] rounded-full font-bold">〇</span>' : 
                                    (finalResult === '×' ? '<span class="px-2 py-0.5 bg-rose-500/20 text-rose-400 text-[10px] rounded-full font-bold">×</span>' : '-');
+                const rankBadge = extractRankBadge(a.reason);
                 return `
                     <td class="py-2.5 px-2 text-slate-200 font-semibold">${{a.number}}番 (${{a.name}})</td>
-                    <td class="py-2.5 px-2 font-mono ${{diffClass}}">${{diffText}}</td>
-                    <td class="py-2.5 px-2 text-slate-300 font-mono">${{scoreText}}</td>
-                    <td class="py-2.5 px-2">${{resultBadge}}</td>
+                    <td class="py-2.5 px-2 text-center">${{rankBadge}}</td>
+                    <td class="py-2.5 px-2 font-mono ${{diffClass}} text-right">${{diffText}}</td>
+                    <td class="py-2.5 px-2 text-slate-300 font-mono text-center">${{scoreText}}</td>
+                    <td class="py-2.5 px-2 text-center">${{resultBadge}}</td>
                 `;
             }};
 
             if (jugAnswers.length === 0) {{
-                ansJugglerBody.innerHTML = '<tr><td colspan="4" class="py-3 text-center text-slate-500">答え合わせはありません。</td></tr>';
+                ansJugglerBody.innerHTML = '<tr><td colspan="5" class="py-3 text-center text-slate-500">答え合わせはありません。</td></tr>';
             }} else {{
                 jugAnswers.forEach(a => {{
                     const tr = document.createElement('tr');
@@ -1294,7 +1571,7 @@ def generate_html_dashboard(excel_path, store_name):
             }}
 
             if (otherAnswers.length === 0) {{
-                ansOthersBody.innerHTML = '<tr><td colspan="4" class="py-3 text-center text-slate-500">答え合わせはありません。</td></tr>';
+                ansOthersBody.innerHTML = '<tr><td colspan="5" class="py-3 text-center text-slate-500">答え合わせはありません。</td></tr>';
             }} else {{
                 otherAnswers.forEach(a => {{
                     const tr = document.createElement('tr');
@@ -1302,6 +1579,61 @@ def generate_html_dashboard(excel_path, store_name):
                     tr.innerHTML = renderAnswerRow(a, false);
                     ansOthersBody.appendChild(tr);
                 }});
+            }}
+
+            // 5. Populate Juggler High Setting List (Score >= 4.5) for targetDate
+            const jugHighScoreBody = document.getElementById('juggler-high-score-body');
+            const jugHighCountSpan = document.getElementById('jug-high-count');
+            if (jugHighScoreBody) {{
+                jugHighScoreBody.innerHTML = '';
+                const jugHighRecords = filteredRecords.filter(r => isJugglerMachine(r.name) && (r.score >= 4.5)).sort((a, b) => b.score - a.score);
+                if (jugHighCountSpan) jugHighCountSpan.textContent = `${{jugHighRecords.length}}台`;
+                
+                if (jugHighRecords.length === 0) {{
+                    jugHighScoreBody.innerHTML = '<tr><td colspan="5" class="py-3 text-center text-slate-500">該当する高設定挙動台(4.5以上)はありません。</td></tr>';
+                }} else {{
+                    jugHighRecords.forEach(r => {{
+                        const tr = document.createElement('tr');
+                        tr.className = 'hover:bg-slate-800/30';
+                        const scoreVal = r.score ? parseFloat(r.score).toFixed(1) : '-';
+                        const diffText = HAS_DIFF_COINS ? (r.diff >= 0 ? '+' + r.diff : r.diff) + ' 枚' : (r.comb_ratio || '-');
+                        const diffClass = HAS_DIFF_COINS ? (r.diff >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400') : 'text-slate-300';
+                        
+                        tr.innerHTML = `
+                            <td class="py-2 px-1 font-semibold text-slate-200">${{r.number}}番 <span class="text-[10px] text-slate-400 font-normal">(${{r.name}})</span></td>
+                            <td class="py-2 px-1 text-right text-slate-300">${{(r.games || 0).toLocaleString()}}G <span class="text-[10px] text-slate-400">(${{r.rb_ratio || '-'}})</span></td>
+                            <td class="py-2 px-1 text-right ${{diffClass}}">${{diffText}}</td>
+                            <td class="py-2 px-1 text-center font-bold text-amber-400">${{scoreVal}} 🌟</td>
+                        `;
+                        jugHighScoreBody.appendChild(tr);
+                    }});
+                }}
+            }}
+
+            // 6. Populate Store Top 5 Performance (Diff Coins or Games/Score)
+            const topPerfBody = document.getElementById('top-performance-body');
+            if (topPerfBody) {{
+                topPerfBody.innerHTML = '';
+                const topRecords = [...filteredRecords].sort((a, b) => HAS_DIFF_COINS ? (b.diff - a.diff) : (b.games - a.games)).slice(0, 5);
+                
+                if (topRecords.length === 0) {{
+                    topPerfBody.innerHTML = '<tr><td colspan="3" class="py-3 text-center text-slate-500">実績データがありません。</td></tr>';
+                }} else {{
+                    topRecords.forEach((r, idx) => {{
+                        const tr = document.createElement('tr');
+                        tr.className = 'hover:bg-slate-800/30';
+                        const rankBadge = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `${{idx + 1}}.`));
+                        const valText = HAS_DIFF_COINS ? ((r.diff >= 0 ? '+' : '') + r.diff.toLocaleString() + ' 枚') : (r.score ? r.score.toFixed(1) + ' 🌟' : '-');
+                        const valClass = HAS_DIFF_COINS ? (r.diff >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400') : 'text-amber-400 font-bold';
+                        
+                        tr.innerHTML = `
+                            <td class="py-2 px-1 font-semibold text-slate-200">${{rankBadge}} ${{r.number}}番 <span class="text-[10px] text-slate-400 font-normal">(${{r.name}})</span></td>
+                            <td class="py-2 px-1 text-right text-slate-300">${{(r.games || 0).toLocaleString()}} G</td>
+                            <td class="py-2 px-1 text-right ${{valClass}}">${{valText}}</td>
+                        `;
+                        topPerfBody.appendChild(tr);
+                    }});
+                }}
             }}
 
             // 5. Populate Raw Data Table
@@ -1574,7 +1906,7 @@ def main():
     write_ai_results_to_excel(excel_file, target_date, ai_text)
     
     # 4. Generate the fully interactive HTML Dashboard for instant check
-    generate_html_dashboard(excel_file, store_name)
+    generate_html_dashboard(excel_file, store_name, has_diff_coins=store_info.get('has_diff_coins', True))
     
     # 5. Automatically deploy to GitHub Pages
     deploy_to_github()
