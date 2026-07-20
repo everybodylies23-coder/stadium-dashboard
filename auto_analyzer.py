@@ -626,14 +626,11 @@ def run_gemini_analysis(api_key, context, target_date):
 
 ---
 【分析対象店舗の特性】
-店舗名：トワーズ大和深見店
+店舗名：スタジアム店
 特徴：
-- 通常日ではなく、特定イベント日に設定投入が集中するホール
-- 主なイベント対象：
-  ① 特定末尾日（6日・16日・26日など「末尾6」の日）
-  ② 日ゾロ目の日（11日・22日）
-  ③ 月日ゾロ目の日（6月6日、7月7日、8月8日などの月日重なり日）
-- 「明日」ではなく、分析対象日（本日：{target_date}）より未来で最も近い【次回イベント開催予定日】を特定して予想すること
+- 毎日営業データをアナスロにて公開するデイリー営業ホールです。
+- 特定イベント日（特定末尾日、日ゾロ目の日、月日ゾロ目の日）の還元に加え、日常の「据え置き」「お詫び」「ローテーション」「隣スライド」を重視します。
+- 「イベント日」のみを狙うのではなく、分析対象日（本日：{target_date}）の【翌日（明日）】の高設定予想・狙い目台を決定してください。
 
 ---
 【提供データ（Python自動集計・構造化データ）】
@@ -1389,11 +1386,19 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
             calculateOverallAIAccuracy();
         }}
 
-                function extractRankBadge(reasonStr) {{
+                                function extractRankBadge(reasonStr) {{
             if (!reasonStr) return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
-            if (reasonStr.includes('推奨Sランク') || reasonStr.includes('Sランク')) {{
-                return '<span class="px-2 py-0.5 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full font-bold text-[11px]">S</span>';
-            }} else if (reasonStr.includes('推奨Aランク') || reasonStr.includes('Aランク')) {{
+            const match = reasonStr.match(/(?:推奨)?([SAB])(?:ランク)?/i);
+            if (match) {{
+                const rank = match[1].toUpperCase();
+                if (rank === 'S') return '<span class="px-2 py-0.5 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-full font-bold text-[11px]">S</span>';
+                if (rank === 'A') return '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full font-bold text-[11px]">A</span>';
+                if (rank === 'B') return '<span class="px-2 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full font-bold text-[11px]">B</span>';
+            }}
+            return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
+        }}
+            return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
+        }} else if (reasonStr.includes('推奨Aランク') || reasonStr.includes('Aランク')) {{
                 return '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full font-bold text-[11px]">A</span>';
             }} else if (reasonStr.includes('推奨Bランク') || reasonStr.includes('Bランク')) {{
                 return '<span class="px-2 py-0.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-full font-bold text-[11px]">B</span>';
