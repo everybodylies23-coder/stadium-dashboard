@@ -623,15 +623,32 @@
             });
         }
 
-                        function calculateOverallAIAccuracy(targetDate) {
+                                function getRankFromReason(reason) {
+            if (!reason) return 'B';
+            if (reason.includes('テスト')) return 'TEST';
+            
+            // Regex for S / A / B ranks
+            const match = reason.match(/(?:推奨)?([SAB])(?:ランク)?/i);
+            if (match) {
+                return match[1].toUpperCase();
+            }
+            
+            // Fallback keywords for older prediction texts
+            if (reason.includes('大本命') || reason.includes('最優先') || reason.includes('超有力')) return 'S';
+            if (reason.includes('本命') || reason.includes('有力') || reason.includes('対抗') || reason.includes('高期待')) return 'A';
+            
+            return 'B';
+        }
+
+        function calculateOverallAIAccuracy(targetDate) {
             const deduped = deduplicatePredictions(rawPredictions);
-            // Filter predictions UP TO targetDate, ONLY S and A ranks, and ignoring dummy test items
             const evaluated = deduped.filter(p => {
                 if (p.result !== '〇' && p.result !== '×') return false;
                 if (!p.reason || p.reason.includes('テスト')) return false;
-                if (targetDate && p.date > targetDate) return false; // Cumulative up to targetDate!
-                const rStr = p.reason.toUpperCase();
-                return rStr.includes('Sランク') || rStr.includes('Aランク') || rStr.includes('推奨S') || rStr.includes('推奨A') || rStr.includes('【S') || rStr.includes('【A');
+                if (targetDate && p.date > targetDate) return false;
+                
+                const rank = getRankFromReason(p.reason);
+                return rank === 'S' || rank === 'A';
             });
             
             if (evaluated.length === 0) {
