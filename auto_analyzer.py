@@ -1317,7 +1317,7 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins = True):
                 <p id="stat-win-rate" class="text-xl md:text-2xl font-bold mt-2 text-white">0%</p>
             </div>
             <div class="p-4 md:p-6 glass rounded-2xl text-center md:text-left">
-                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">AI予測 通算勝率</h3>
+                <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">AI予測 累積勝率(対象日迄)</h3>
                 <p id="stat-ai-accuracy" class="text-xl md:text-2xl font-bold mt-2 text-emerald-400">0%</p>
             </div>
         </div>
@@ -1576,8 +1576,9 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins = True):
             }});
 
             if (dates.length > 0) {{
-                dateSelect.value = dates[0];
-                updateDashboardForDate(dates[0]);
+                const latestDate = dates[dates.length - 1];
+                dateSelect.value = latestDate;
+                updateDashboardForDate(latestDate);
             }}
             
             calculateOverallAIAccuracy(targetDate);
