@@ -129,6 +129,157 @@ def extract_excel_specific_days_setting(excel_path):
     return "末尾1"
 
 
+def extract_past_summaries(excel_path, days=30):
+    """
+    Excelの【AI】総括シートから、直近最大30日分のAI総括・店長心理ログを抽出する
+    """
+    try:
+        if not excel_path or not os.path.exists(excel_path):
+            return "（過去のAI総括ログなし）"
+        wb = openpyxl.load_workbook(excel_path, data_only=True)
+        summaries = []
+        if "【AI】総括" in wb.sheetnames:
+            ws = wb["【AI】総括"]
+            rows = []
+            for r in range(2, ws.max_row + 1):
+                dt_val = ws.cell(r, 5).value
+                txt_val = ws.cell(r, 6).value
+                if dt_val and txt_val:
+                    dt_str = normalize_date_string(dt_val)
+                    rows.append((dt_str, str(txt_val)))
+            
+            rows.sort(key=lambda x: x[0])
+            recent_rows = rows[-days:]
+            for dt_str, txt in recent_rows:
+                summaries.append(f"【{dt_str} のAI総括・心理分析】\n{txt}\n")
+        wb.close()
+        return "\n".join(summaries) if summaries else "（過去のAI総括ログなし）"
+    except Exception as e:
+        print(f"Notice: Could not read past summaries: {e}")
+        return "（過去のAI総括ログなし）"
+
+
+def extract_top5_winning_areas(all_records):
+    """
+    全蓄積データから、設定スコア4.5以上（高設定挙動）の出現率が高い台番号TOP5を自動計算
+    """
+    from collections import defaultdict
+    mach_scores = defaultdict(list)
+    
+    for r in all_records:
+        m_num = r.get('machine_number')
+        score = r.get('score', 0)
+        if m_num:
+            mach_scores[m_num].append(score)
+            
+    mach_win_rates = {}
+    for m_num, scores in mach_scores.items():
+        if len(scores) >= 2:
+            high_count = sum(1 for s in scores if s >= 4.5)
+            rate = high_count / len(scores)
+            mach_win_rates[m_num] = (rate, len(scores), high_count)
+            
+    top_machines = sorted(mach_win_rates.items(), key=lambda x: (x[1][0], x[1][2]), reverse=True)[:5]
+    
+    lines = ["【🏆 店舗別・過去高設定勝率 台番号 TOP 5】"]
+    if top_machines:
+        for rank, (m_num, (rate, total, high)) in enumerate(top_machines, 1):
+            lines.append(f"  第{rank}位: 台#{m_num} (高設定スコア率: {rate*100:.1f}% / 該当{high}回/{total}営業日)")
+    else:
+        lines.append("  （データ蓄積数不足のため現在算出中）")
+        
+    return "\n".join(lines)
+
+
+def extract_manager_strategy_context(store_dir):
+    """
+    店舗フォルダ内に『過去の店長戦略コンテキスト.md』が存在する場合のみテキストを読み込み、
+    存在しない場合は安全に無視する。
+    """
+    strategy_file = os.path.join(store_dir, "過去の店長戦略コンテキスト.md")
+    if os.path.exists(strategy_file):
+        try:
+            with open(strategy_file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            if content:
+                print("Notice: 『過去の店長戦略コンテキスト.md』を検出・読み込みました。")
+                return f"■ セクション12: 過去の店長戦略コンテキスト（店舗固有の戦略・傾向知見メモ）\n{content}"
+        except Exception as e:
+            print(f"Notice: Could not read 過去の店長戦略コンテキスト.md: {e}")
+            
+    return "■ セクション12: 過去の店長戦略コンテキスト\n（※過去の店長戦略コンテキスト.md は配置されていないため無視します）"
+
+
+def extract_event_vs_normal_merihari(all_records, excel_file):
+    """
+    全蓄積データと特定日設定を照合し、「特定日」と「通常日」での高設定（スコア4.5以上）投下台数のギャップを自動判定
+    """
+    try:
+        from collections import defaultdict
+        specific_days_rule = extract_excel_specific_days_setting(excel_file)
+        
+        rule_str = str(specific_days_rule).lower()
+        
+        records_by_date = defaultdict(list)
+        for r in all_records:
+            d_str = r.get('date')
+            score = r.get('score', 0)
+            if d_str:
+                records_by_date[d_str].append(score)
+                
+        event_days_scores = []
+        normal_days_scores = []
+        
+        for d_str, scores in records_by_date.items():
+            try:
+                dt_obj = datetime.datetime.strptime(d_str, "%Y/%m/%d")
+                day_num = dt_obj.day
+                month_num = dt_obj.month
+            except ValueError:
+                continue
+                
+            is_event = False
+            digits = re.findall(r'\d+', rule_str)
+            for d in digits:
+                d_int = int(d)
+                if d_int < 10 and day_num % 10 == d_int:
+                    is_event = True
+                elif day_num == d_int:
+                    is_event = True
+                    
+            if "ゾロ目" in rule_str and (day_num in [11, 22] or day_num == month_num):
+                is_event = True
+                
+            high_count = sum(1 for s in scores if s >= 4.5)
+            if is_event:
+                event_days_scores.append(high_count)
+            else:
+                normal_days_scores.append(high_count)
+                
+        avg_event_high = (sum(event_days_scores) / len(event_days_scores)) if event_days_scores else 0.0
+        avg_normal_high = (sum(normal_days_scores) / len(normal_days_scores)) if normal_days_scores else 0.0
+        
+        lines = [
+            "■ セクション13: 店舗の特定日 vs 通常日 メリハリ分析データ（自動判定）",
+            f"  ・特定日設定: {specific_days_rule}",
+            f"  ・特定日（平均高設定投下数）: {avg_event_high:.1f} 台 / 1営業日",
+            f"  ・通常日（平均高設定投下数）: {avg_normal_high:.1f} 台 / 1営業日"
+        ]
+        
+        if avg_event_high >= avg_normal_high * 2.0 and avg_normal_high <= 2.0:
+            lines.append("  ⚠️ 【店舗診断: 強烈メリハリ型ホール】")
+            lines.append("     この店舗は特定日に高設定が集中し、通常日は高設定が極めて少ない店舗です。")
+            lines.append("     【最重要指示】: 通常日の分析では無理にS/Aランクの予想を出さず、評価を控えめ（Bランク中心または厳選1〜2台）にしてください。")
+        else:
+            lines.append("  ℹ️ 【店舗診断: 全日・ローテ型ホール】")
+            lines.append("     この店舗は通常日にも一定数の高設定が投下されるホールです。ローテーションや履歴DBを重視して予想してください。")
+            
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"Notice: Could not calculate event vs normal merihari: {e}")
+        return "■ セクション13: 店舗の特定日 vs 通常日 メリハリ分析データ\n  （自動判定準備中）"
+
+
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         print(f"Error: {CONFIG_FILE} not found. Please create it first.")
@@ -421,7 +572,8 @@ def prepare_ai_context(excel_path, target_date):
             d_str = str(d_val).strip().replace("-", "/")
             
         try:
-            m_num_int = int(str(m_num).strip())
+            m_num_str = re.sub(r'\D', '', str(m_num).strip())
+            m_num_int = int(m_num_str)
         except ValueError:
             continue
             
@@ -546,7 +698,8 @@ def prepare_ai_context(excel_path, target_date):
                 pd_str = str(p_date).strip()
                 
             try:
-                p_num_int = int(str(p_num).strip())
+                m_num_str = re.sub(r'\D', '', str(p_num).strip())
+                p_num_int = int(m_num_str)
             except ValueError:
                 continue
                 
@@ -594,6 +747,8 @@ def prepare_ai_context(excel_path, target_date):
         juggler_high_score_lines.append(f"🌟 台#{r['machine_number']} ({r['machine_name']}): 最終スコア {r['score']} | G数 {r['g_games']}G | 差枚 {r['diff_coins']:+d}枚 | BB:{r['bb']} RB:{r['rb']}")
 
     top5_recs = sorted(today_recs, key=lambda x: x['diff_coins'], reverse=True)[:5]
+    top5_areas_text = extract_top5_winning_areas(all_records)
+    merihari_text = extract_event_vs_normal_merihari(all_records, excel_path)
     top5_lines = []
     for i, r in enumerate(top5_recs, 1):
         top5_lines.append(f"🏆 第{i}位 台#{r['machine_number']} ({r['machine_name']}): 差枚 {r['diff_coins']:+d}枚 | G数 {r['g_games']}G | スコア {r['score']}")
@@ -632,6 +787,9 @@ def prepare_ai_context(excel_path, target_date):
 
 【🏆 本日店舗実績 TOP 5 (差枚TOP5)】
 {chr(10).join(top5_lines) if top5_lines else "（実績データなし）"}
+
+■ セクション9: 店舗別・過去高設定勝率エリア TOP 5
+{top5_areas_text}
 """
     return context_text
 
@@ -639,150 +797,138 @@ def prepare_ai_context(excel_path, target_date):
 def run_gemini_analysis(api_key, context, target_date, excel_file=None):
     if excel_file and os.path.exists(excel_file):
         specific_days_rule = extract_excel_specific_days_setting(excel_file)
+        past_summaries = extract_past_summaries(excel_file, days=30)
+        store_dir = os.path.dirname(excel_file)
+        manager_strategy_context = extract_manager_strategy_context(store_dir)
     else:
-        specific_days_rule = "特定末尾日、日ゾロ目の日、月日ゾロ目の日"
+        specific_days_rule = "末尾5"
+        past_summaries = "（過去のAI総括ログなし）"
+        manager_strategy_context = """■ セクション12: 過去の店長戦略コンテキスト
+（※過去の店長戦略コンテキスト.md は配置されていないため無視します）"""
 
     import google.generativeai as genai
     genai.configure(api_key=api_key)
     
     models_to_try = [
-        'gemini-3.1-pro-preview',
+        'gemini-3.6-flash',
         'gemini-3.5-flash',
+        'gemini-3.1-pro-preview',
+        'gemini-2.5-pro',
+        'gemini-flash-latest',
         'gemini-3.1-flash-lite',
-        'gemini-2.0-flash'
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-lite'
     ]
     
     d_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
     tomorrow_date = (d_obj + datetime.timedelta(days=1)).strftime("%Y/%m/%d")
+    
     prompt = f"""
-あなたはパチスロホールの設定配分、店長心理、イベント周期、台番ローテーションを解読するプロのデータサイエンティスト兼現役パチプロです。
-提供された「Python自動集計による構造化統計データ」に基づき、次回イベント開催日における推奨狙い台（計10台）を定量スコアリングの上で決定してください。
+あなたはパチスロホールの設定配分、店長心理、イベント周期、台番ローテーション、および行動経済学を解読するプロのデータサイエンティスト兼現役パチプロです。
+提供された「Python自動集計による構造化統計データ」および「過去30日分のAI営業総括ログ」に基づき、分析対象日の【翌日（明日）：{tomorrow_date}】における推奨狙い台（計10台：ジャグラー系5台 ＋ スマスロ・その他5台）を定量スコアリングの上で決定し、営業総括を作成してください。
 
-目的は、次回イベント開催日における高設定投入予想の精度を極限まで高めることです。
-一般ユーザー向けの解説は不要です。期待値を最大化するための分析のみを行ってください。
-
----
 【分析対象店舗の特性】
 店舗名：スタジアム店
-特徴：
-- 毎日営業データをアナスロにて公開するデイリー営業ホールです。
-- 特定イベント日（特定末尾日、日ゾロ目の日、月日ゾロ目の日）の還元に加え、日常の「据え置き」「お詫び」「ローテーション」「隣スライド」を重視します。
-- 「イベント日」のみを狙うのではなく、分析対象日（本日：{target_date}）の【翌日（明日）】の高設定予想・狙い目台を決定してください。
+- 分析対象店舗（スタジアム店）は毎日営業データをアナスロにて公開するデイルーホールです。
+- 店舗の特定イベント日は【末尾5】です（Excel⚙️特定日末尾設定：{specific_days_rule}）。
+- 分析対象日（本日：{target_date}）の【翌日（明日）：{tomorrow_date}】の高設定予想・狙い目台10台（ジャグラー5台＋スマスロ/その他5台）を決定してください。
+- 本分テキスト内や予想根拠内に、未来の特定日（例：4月6日等）を狙い日付として絶対に記載せず、必ず【本日日付の翌日（明日）：{tomorrow_date}】を明記すること。
 
----
-【提供データ（Python自動集計・構造化データ）】
+==================================================
+【最重要：狙い目台選定の 7大細分化スコアリングルール（合計100点満点）】
+==================================================
+明日の推奨狙い台を選定する際、以下の7つの項目（合計100点満点）で厳密に加点・採点を行い、最終スコアを算出してください。
+
+1. 【末尾・イベント周期との一致】（最大 20点）
+   - 月日ゾロ目、日ゾロ目、特定末尾（例: 特定日末尾: {specific_days_rule}）との合致度。
+   - セクション1の末尾マトリクスにおける高実績末尾へ強加点。
+
+2. 【台番ローテーション・周期到達率】（最大 20点）
+   - セクション5の高設定履歴DBにおける「前回高設定からの経過イベント数」およびローテーション周期到達度。
+
+3. 【店長配分クセ・位置特性（勝率エリアTOP5）】（最大 15点）
+   - セクション9の「過去高設定勝率エリア/台番 TOP 5」への該当度。
+   - 角台、角2、島中央、隣スライド、据え置き傾向等の位置特性との一致。
+
+4. 【直近不発からのお詫び・リベンジ投入期待】（最大 15点）
+   - 直近で高稼働・高設定挙動を示しながら不発（差枚マイナス）に終わった台への「お詫びリセット」期待度。
+   - セクション8の「本日スコア4.5以上台の投入パターン」との類似性。
+
+5. 【機種扱いの強さ・本気度】（最大 15点）
+   - セクション3の機種別高設定投入率、およびホールにおける看板機種（マイジャグ/主要スマスロ等）への優先度。
+   - 過去30日間のAI総括から読み取れる店舗の主力推し機種傾向。
+
+6. 【一次情報 ＆ 店舗固有戦略の一致】（最大 10点）
+   - セクション7のユーザー入力（公約、確定系、LINE/SNS示唆等）および『セクション12: 過去の店長戦略コンテキスト』に記載された店長の長期戦略・配分癖メモと直接合致している場合、強力に補強・加点してください。
+
+7. 【過去AI予想の答え合わせ精度・相性】（最大 5点）
+   - セクション6の直近答え合わせ履歴。2回以上連続×の要警戒台（ペナルティ）を回避し、過去相性の良い台番を加点。
+
+【ランク判定基準】
+・推奨 S ランク: 90点 〜 100点（全条件が合致する超本命台）
+・推奨 A ランク: 80点 〜 89点（強力な根拠が重複する対抗台）
+・推奨 B ランク: 70点 〜 79点（データ・周期性に合致する抑え台）
+※ 70点未満の台は推奨台として抽出しないこと。
+
+==================================================
+【最重要命令：ジャグラー高設定（スコア4.5以上）なぜなぜ分析 5 Whys】
+==================================================
+本日（{target_date}）の実績データにおいて、最終設定スコア 4.5 以上のジャグラー系該当台が存在する場合、営業総括テキストの冒頭に【🎯 ジャグラー高設定 なぜなぜ分析 5 Whys】セクションを設け、以下のフォーマットで5段階の因果関係を深掘りして言語化してください。
+
+■ フォーマット例:
+🎯 【ジャグラー高設定（スコア4.5以上）なぜなぜ分析 5 Whys】
+・台#XXX（機種名 / スコア X.X）
+  【Why 1: 直近要因】なぜこの台が高設定だったのか？（例: 前日大幅凹みからの上げ）
+  【Why 2: 配分傾向】なぜそのパターンを選んだのか？（例: 3日連続不発台へのお詫びリセット）
+  【Why 3: 時期要因】なぜ今日その施策を行ったのか？（例: 特定日前の事前稼働向上施策）
+  【Why 4: 位置特性】なぜ他の候補ではなくこの場所か？（例: 中通路から見える角2視認エリア）
+  【Why 5: 根本真因】なぜこの台番号だったのか？（例: 末尾Xへの事前示唆と店長勝負配分の合致）
+  💡 【本日の配分法則の言語化・結論】店長の思考癖・配分パターンのまとめ
+
+==================================================
+【分析対象データ（コンテキスト）】
+==================================================
 {context}
 
----
-【最重要分析ルール】
+■ セクション11: 過去30日分の【AI】営業総括・店長心理分析ログ
+{past_summaries}
 
-1. 一次情報（店舗確認情報）の扱い
-一次情報（SNS示唆、公約、演者来店等）は毎回存在するわけではないため、絶対的判断基準ではなく「参考および周期補強要素（最大10点）」として扱うこと。データの周期性やローテーション分析を主軸とすること。
+{manager_strategy_context}
 
-2. 出玉だけで高設定扱いしない
-特にスマスロ・荒波機種は大量出玉だけで高設定と判断しない。3000G未満の大量出玉は誤爆リスクとして補正すること。
+==================================================
+【出力フォーマット指示】
+==================================================
+以下の構成で出力してください。
 
-3. 過去に連続×となった台の再推奨ルール
-セクション6（答え合わせ履歴）で直近2回以上連続で「×」となっている台番号は、同一の根拠での再推奨を厳禁とする。再推奨する場合は、これまでと異なる明確な新根拠（周期到達、お詫び条件合致等）がある場合に限る。
+### ① 【AI】営業評価と店長の心理総括
+【次回（明日：{tomorrow_date}）の参戦評価：〇〇（例：狙い目だけ打ちに行く）】
+次回予測日：{tomorrow_date}（イベント特徴：〇〇）
 
-4. 機種別の評価軸
-- ジャグラー・ノーマル系：REG確率、合算確率、回転数、REG先行、ブドウ逆算値、設定スコア4.5以上を重視。
-- スマスロ・AT系：G数（6,000G以上の高稼働は高設定評価）、差枚（+1,000枚以上）、初当たり、設定差要素、イベント対象機種かを重視。
+（※ここに「🎯 ジャグラー高設定 なぜなぜ分析 5 Whys」を挿入）
 
-5. 安易な断定表現の禁止
-「設定6濃厚」「100%入る」などの安易な表現は禁止。「高設定期待」「設定5〜6期待」「本命候補」「抑え候補」などの堅実な表現を使用すること。
+**店長心理分析・今後の配分傾向：**
+（過去30日の総括ログおよび本日の結果を踏まえた深層心理の分析文章）
 
----
-【100点満点スコアリング基準】
-
-各候補台を以下の基準で100点満点で定量評価してください。
-
-【加点項目（最大100点）】
-- 末尾・イベント周期との一致（月日ゾロ目・日ゾロ目・末尾6等）：最大20点
-- 台番ローテーション・周期到達率（高設定履歴DB）：最大20点
-- 店長配分クセ・位置特性（角、角2、中央、スライド、据え置き傾向）：最大15点
-- 直近不発からのお詫び・リベンジ投入期待：最大15点
-- 機種扱いの強さ・本気度：最大15点
-- 一次情報（店舗確認情報・SNS示唆・公約等）の一致・補強：最大10点
-- 過去AI予想の答え合わせ精度・相性：最大5点
-
-【減点項目】
-- 低G数の誤爆疑い：-5〜-20点
-- 根拠が出玉のみ：-10〜-25点
-- 直近で連続×判定を受けている台の安易な再推：-10〜-20点
-- 店舗傾向・クセとの矛盾：-10〜-30点
-
----
-【ランク判定ルール】
-※通算勝率はS・Aランクのみで計算されるため、基準を厳格に適用してください。
-- 【Sランク】（90点以上）：根拠が3つ以上重複する超本命台。
-- 【Aランク】（75〜89点）：根拠が2つ以上重複する強狙い台。
-- 【Bランク】（60〜74点）：根拠はあるが確証が弱い抑え台（参考枠）。
-- 【Cランク】（59点以下）：選定不可。
-
----
-【出力台数（絶対厳守）】
-以下の合計10台を必ず選定してください。
-- ジャグラー系（ノーマルタイプ）：5台
-- スマスロ・その他：5台
-※S・Aランクが不足する場合は、無理に高ランクを付けず、Bランクとして出力してください。
-
----
-【絶対厳守の出力フォーマット】
-
-① 【AI】営業評価と店長の心理総括
-【次回イベントの参戦評価：行ける（勝負すべき日）】
-（※選択肢：「行ける（勝負すべき日）」「狙い目だけ打ちに行く（ピンポイント狙い）」「行く価値無し（見送り推奨）」）
-次回イベント予測日：YYYY/MM/DD（イベント特徴：例 月日ゾロ目の日 / 末尾6の日 / 日ゾロ目の日）
-
-本日の営業結果を踏まえ、店長の意図（還元・回収・フェイク・スライド・末尾寄せ）を簡潔に分析してください。
-
-② 機種別・設定投入の本気度検証
-- 本命機種
-- 準本命機種
-- 回収用・危険機種
-- ジャグラー系の扱い
-- スマスロ系の扱い
-
-③ 店長の投入クセ・周期法則
-- 強い末尾と次回巡回末尾の予測（月日ゾロ目・日ゾロ目含む）
-- 角・角2・中央の配分傾向
-- 据え置き・スライド・お詫び投入の分析
-- 前回予想とのズレ・反省点
-
-④ AI独自の次回推奨狙い台
-全機種TOP5とジャグラーTOP5を分けて解説してください。各台について【点数・ランク・最重要根拠・リスク要因】を明記すること。
-
-⑤ 【AI】予想・答え合わせ コピペ用テーブル
-以下のMarkdown表形式で出力してください。日付には必ず【次回イベント予定日】を記入すること。
-
+### ② 【AI】次回（明日：{tomorrow_date}）推奨狙い目台リスト（コピペ用）
 | 日付 | 機種名 | 台番号 | 予想・狙い根拠 |
-| --- | --- | --- | --- |
-| YYYY/MM/DD | 機種名 | 台番号 | 【推奨[S/A/B]ランク - [点数]点】根拠：[重複根拠]。リスク：[リスク要因]。 |
-
-⑥ 本日（次回イベント）で最も自信があるTOP 3台
-10台の中から、最も信頼度が高いTOP 3台を抽出し、その理由を短く書いて締めくくってください。
+| :--- | :--- | :--- | :--- |
+| {tomorrow_date} | マイジャグラーV | 590 | 【推奨Sランク - 95点】根拠：・・・ |
+...（ジャグラー系5台 ＋ スマスロ・その他5台の計10台）
 """
-    
+
     for model_name in models_to_try:
         try:
-            print(f"Sending prompt to Gemini API using model: {model_name}... (This may take a moment)")
+            print(f"Trying Gemini model: {model_name}...")
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
-            return response.text
+            if response and response.text:
+                print(f"Success with model: {model_name}!")
+                return response.text
         except Exception as e:
-            err_str = str(e).lower()
-            is_skippable = (
-                any(x in err_str for x in ["429", "quota", "exhausted", "limit"]) or
-                any(x in err_str for x in ["404", "not found", "no longer available", "deprecated"])
-            )
-            if is_skippable:
-                print(f"Notice: Model {model_name} is rate-limited, deprecated or unavailable. Automatically trying next model...")
-                continue
-            else:
-                raise e
-                
-    raise Exception("Error: All available Gemini models failed due to quota limits. Please try again after a few minutes.")
+            print(f"Model {model_name} failed: {e}")
+            
+    raise RuntimeError("All Gemini models failed to generate content.")
+
 
 def write_ai_results_to_excel(excel_path, target_date, ai_text):
     d_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
@@ -804,7 +950,8 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
                 date_str = cells[0]
                 machine_name = cells[1]
                 try:
-                    machine_num = int(cells[2])
+                    m_num_str = re.sub(r'\D', '', str(cells[2]).strip())
+                    machine_num = int(m_num_str)
                 except ValueError:
                     machine_num = cells[2]
                 reason = cells[3]
@@ -882,7 +1029,8 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
             date_str = normalize_date_string(date_val)
             data_dates.add(date_str)
             try:
-                m_num = int(str(mach_num).strip())
+                m_num_str = re.sub(r'\D', '', str(mach_num).strip())
+                m_num = int(m_num_str)
                 accumulated_db[(date_str, m_num)] = (g_games, diff_coins, setting_score)
             except ValueError:
                 continue
@@ -911,7 +1059,8 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
         if date_val is not None and mach_val is not None:
             date_str = normalize_date_string(date_val)
             try:
-                m_num = int(str(mach_val).strip())
+                m_num_str = re.sub(r'\D', '', str(mach_val).strip())
+                m_num = int(m_num_str)
                 key = (date_str, m_num)
                 if key in accumulated_db:
                     g_games, diff_coins, setting_score = accumulated_db[key]
@@ -977,15 +1126,26 @@ def write_ai_results_to_excel(excel_path, target_date, ai_text):
             break
             
     target_sum_row = found_date_row if found_date_row else last_sum_r + 1
-    dt_c = summary_ws.cell(target_sum_row, 5, d_obj)
-    dt_c.number_format = 'yyyy/mm/dd'
-    summary_ws.cell(target_sum_row, 6, ai_text)
+    if ai_text and ai_text.strip():
+        dt_c = summary_ws.cell(target_sum_row, 5, d_obj)
+        dt_c.number_format = 'yyyy/mm/dd'
+        summary_ws.cell(target_sum_row, 6, ai_text)
+        try:
+            rich_summaries = {}
+            if os.path.exists(RICH_SUMMARIES_FILE):
+                with open(RICH_SUMMARIES_FILE, "r", encoding="utf-8") as f:
+                    rich_summaries = json.load(f)
+            rich_summaries[target_date] = ai_text
+            with open(RICH_SUMMARIES_FILE, "w", encoding="utf-8") as f:
+                json.dump(rich_summaries, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not update rich summaries file: {e}")
     
     safe_save_workbook(wb, excel_path)
     wb.close()
     print("AI Analysis results written successfully into sheets.")
 
-def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
+def generate_html_dashboard(excel_path, store_name, has_diff_coins = True):
     """
     Reads data from the Excel workbook and generates a fully interactive, lightweight
     HTML dashboard with rich CSS styling, search filters, and statistics.
@@ -1420,7 +1580,7 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
                 updateDashboardForDate(dates[0]);
             }}
             
-            calculateOverallAIAccuracy();
+            calculateOverallAIAccuracy(targetDate);
         }}
 
                                         function extractRankBadge(reasonStr) {{
@@ -1464,21 +1624,18 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
             document.getElementById('stat-avg-diff').textContent = avgDiff.toLocaleString() + ' 枚';
             document.getElementById('stat-win-rate').textContent = winRate + '%';
 
-            // 2. Load AI Summary text (Markdown render & keep ①, ②, ③ and ⑥, stripping ④ and ⑤!)
+            // 2. Load AI Summary text (Markdown render full text, filtering out raw table lines)
             const summaryObj = rawSummaries.find(s => s.date === targetDate);
             if (summaryObj && summaryObj.text) {{
                 let cleanText = summaryObj.text;
-                // If text contains ④ and ⑥, strip out ④ and ⑤ between them, keeping ①, ②, ③ and ⑥
-                const index4 = cleanText.search(/(④|4\\.|AI独自の次回推奨狙い台)/);
-                const index6 = cleanText.search(/(⑥|6\\.|最も自信があるTOP)/);
-                
-                if (index4 !== -1 && index6 !== -1 && index6 > index4) {{
-                    const part1 = cleanText.substring(0, index4).trim();
-                    const part2 = cleanText.substring(index6).trim();
-                    cleanText = part1 + String.fromCharCode(10, 10) + part2;
-                }} else if (index4 !== -1) {{
-                    cleanText = cleanText.substring(0, index4).trim();
-                }}
+                const lines = cleanText.split('\\n');
+                const filteredLines = lines.filter(line => {{
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('|') && trimmed.endsWith('|')) return false;
+                    if (trimmed.includes('⑤ 【AI】予想・答え合わせ') || trimmed.includes('コピペ用テーブル')) return false;
+                    return true;
+                }});
+                cleanText = filteredLines.join('\\n').trim();
                 
                 document.getElementById('ai-summary-text').innerHTML = marked.parse(cleanText);
             }} else {{
@@ -1715,9 +1872,17 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins=False):
             }});
         }}
 
-        function calculateOverallAIAccuracy() {{
+                        function calculateOverallAIAccuracy(targetDate) {{
             const deduped = deduplicatePredictions(rawPredictions);
-            const evaluated = deduped.filter(p => p.result === '〇' || p.result === '×');
+            // Filter predictions UP TO targetDate, ONLY S and A ranks, and ignoring dummy test items
+            const evaluated = deduped.filter(p => {{
+                if (p.result !== '〇' && p.result !== '×') return false;
+                if (!p.reason || p.reason.includes('テスト')) return false;
+                if (targetDate && p.date > targetDate) return false; // Cumulative up to targetDate!
+                const rStr = p.reason.toUpperCase();
+                return rStr.includes('Sランク') || rStr.includes('Aランク') || rStr.includes('推奨S') || rStr.includes('推奨A') || rStr.includes('【S') || rStr.includes('【A');
+            }});
+            
             if (evaluated.length === 0) {{
                 document.getElementById('stat-ai-accuracy').textContent = '- %';
                 return;
