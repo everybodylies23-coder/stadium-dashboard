@@ -623,17 +623,15 @@
             });
         }
 
-                                function getRankFromReason(reason) {
+                                        function getRankFromReason(reason) {
             if (!reason) return 'B';
             if (reason.includes('テスト')) return 'TEST';
             
-            // Regex for S / A / B ranks
             const match = reason.match(/(?:推奨)?([SAB])(?:ランク)?/i);
             if (match) {
                 return match[1].toUpperCase();
             }
             
-            // Fallback keywords for older prediction texts
             if (reason.includes('大本命') || reason.includes('最優先') || reason.includes('超有力')) return 'S';
             if (reason.includes('本命') || reason.includes('有力') || reason.includes('対抗') || reason.includes('高期待')) return 'A';
             
@@ -651,13 +649,16 @@
                 return rank === 'S' || rank === 'A';
             });
             
+            const statElem = document.getElementById('stat-ai-accuracy');
+            if (!statElem) return;
+            
             if (evaluated.length === 0) {
-                document.getElementById('stat-ai-accuracy').textContent = '- %';
+                statElem.textContent = '- %';
                 return;
             }
             const correct = evaluated.filter(p => p.result === '〇').length;
             const accuracy = Math.round((correct / evaluated.length) * 100);
-            document.getElementById('stat-ai-accuracy').textContent = accuracy + '%';
+            statElem.textContent = accuracy + '% (' + correct + '/' + evaluated.length + ')';
         }
 
         function drawMachineChart(records) {
