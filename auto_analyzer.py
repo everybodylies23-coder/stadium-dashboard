@@ -595,7 +595,7 @@ def prepare_ai_context(excel_path, target_date):
             'score': sc_float
         })
 
-    unique_dates = sorted(list(set(r['date'] for r in all_records)))
+    unique_dates = sorted(list(set(r['date'] for r in all_records)), reverse=True)
     recent_5_dates = unique_dates[-5:] if len(unique_dates) >= 5 else unique_dates
 
     # --- Section 1: End Digit Matrix ---
