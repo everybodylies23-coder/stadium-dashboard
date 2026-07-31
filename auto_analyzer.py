@@ -1624,6 +1624,7 @@ def generate_html_dashboard(excel_path, store_name, has_diff_coins = True):
             document.getElementById('stat-total-diff').className = 'text-xl md:text-2xl font-bold mt-2 ' + (totalDiff >= 0 ? 'text-emerald-400' : 'text-rose-400');
             document.getElementById('stat-avg-diff').textContent = avgDiff.toLocaleString() + ' 枚';
             document.getElementById('stat-win-rate').textContent = winRate + '%';
+            calculateOverallAIAccuracy(targetDate);
 
             // 2. Load AI Summary text (Markdown render full text, filtering out raw table lines)
             const summaryObj = rawSummaries.find(s => s.date === targetDate);
