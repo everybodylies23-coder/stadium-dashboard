@@ -310,14 +310,16 @@
             initializeDashboard();
         });
 
-        function initializeDashboard() {
+                function initializeDashboard() {
             const dates = [...new Set(rawRecords.map(r => r.date))].sort().reverse();
             const dateSelect = document.getElementById('date-select');
             
-            dates.forEach(d => {
+            dateSelect.innerHTML = '';
+            dates.forEach((d, idx) => {
                 const opt = document.createElement('option');
                 opt.value = d;
-                opt.textContent = d;
+                opt.textContent = (idx === 0) ? d + ' (最新)' : d;
+                if (idx === 0) opt.selected = true;
                 dateSelect.appendChild(opt);
             });
 
@@ -326,15 +328,51 @@
             });
 
             if (dates.length > 0) {
-                const latestDate = dates[dates.length - 1];
+                const latestDate = dates[0]; // Index 0 is the NEWEST date!
                 dateSelect.value = latestDate;
                 updateDashboardForDate(latestDate);
             }
-            
-            calculateOverallAIAccuracy(targetDate);
         }
 
-                                        function extractRankBadge(reasonStr) {
+        function getRankFromReason(reason) {
+            if (!reason) return 'B';
+            if (reason.includes('テスト')) return 'TEST';
+            const match = reason.match(/(?:推奨)?([SAB])(?:ランク)?/i);
+            if (match) return match[1].toUpperCase();
+            if (reason.includes('大本命') || reason.includes('最優先') || reason.includes('超有力')) return 'S';
+            if (reason.includes('本命') || reason.includes('有力') || reason.includes('対抗') || reason.includes('高期待')) return 'A';
+            return 'B';
+        }
+
+        function calculateOverallAIAccuracy(targetDate) {
+            const deduped = deduplicatePredictions(rawPredictions);
+            const evaluated = deduped.filter(p => {
+                if (p.result !== '〇' && p.result !== '×') return false;
+                if (!p.reason || p.reason.includes('テスト')) return false;
+                if (targetDate && p.date > targetDate) return false;
+                
+                const rank = getRankFromReason(p.reason);
+                return rank === 'S' || rank === 'A';
+            });
+            
+            const statElem = document.getElementById('stat-ai-accuracy');
+            if (!statElem) return;
+            
+            if (evaluated.length === 0) {
+                statElem.textContent = '- %';
+                return;
+            }
+            const correct = evaluated.filter(p => p.result === '〇').length;
+            const accuracy = Math.round((correct / evaluated.length) * 100);
+            statElem.textContent = accuracy + '%';
+            
+            const detailElem = document.getElementById('stat-ai-accuracy-detail');
+            if (detailElem) {
+                detailElem.textContent = '【' + (targetDate || '最新') + '迄の累計】 ' + correct + '勝 / ' + evaluated.length + '台';
+            }
+        }
+
+        function extractRankBadge(reasonStr) {
             if (!reasonStr) return '<span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded font-bold text-[11px]">-</span>';
             const match = reasonStr.match(/(?:推奨)?([SAB])(?:ランク)?/i);
             if (match) {

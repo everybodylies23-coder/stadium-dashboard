@@ -1,0 +1,43 @@
+
+var ftGUID_7970013="67181BA99F7BB8";
+var ftConfID_7970013="0";
+var ftParams_7970013="ft_custom=QXtrzhgGAuM1bmrWAWQH7zVHDdsFRl2Orbo=&ftOBA=1&ft_agentEnv=0&ft_referrer=https%3A%2F%2Fgoogleads.g.doubleclick.net%2Fpagead%2Fhtml%2Fr20260804%2Fr20190131%2Fzrt_lookup_fy2021.html%23RS-0-%26adk%3D1812271801%26client%3Dca-pub-8934993653059501%26fa%3D1%26ifi%3D4%26uci%3Da!4%26btvi%3D2&gdpr=0&ftClick=https://adclick.g.doubleclick.net/aclk?sa=L&ai=Cuqo4xEtzaoXBKZKIjeYPvo_o4AWI76j0XN69t5avAcCNtwEQASDSrfuEAWCJg8iE-BPIAQmoAwHIAwKqBNQCT9Cce81olJq4EuS-voVJqG0vXnpR4vsdwDyWAMhuUJFBON-N8_uE46jwmAbzR0yzGu4_3zn2O_1gu1xLfb0fu4UaKg30sfyCXfOfL-NH5V7mQjOJ-gg3QqHQEVfg72A56T9VnKK69r38dEqbh25R-lQ-SB_mSRDfZN1qs6oK6DAASHHLpUYxOhhITeezmlLzg1Qf3dsqhctXYfzWnCEtv9-chRbP-6UdxOHTJbN1hTGAN6t4jtYNjtEv36f63RnK3kcZYd8cLc315mFRyvq-qtxJeGv0jUA9QVivFU-7rWer4OGih1cV23Yje1tilER-ZBSlYpxYc19TJHZU2xeZ3lFlOdqSg_s6AWVOYiar2iVtvozqmuBYfUrQ1xPKhfIzh55zDhhnLUTApwjKZyrlM6Q43tBU7vTYuUEvloc63BoGmt51suZtSQZJ8gcyFOrI23hKj4AGlNS8r6fk7vzCAaAGIYgHAZAHAqgHk9ixAqgHlNixAqgHldixAqgHpr4bqAeW2BuoB6qbsQKoB_-esQKoB9-fsQKoB_7osQKoB62-sQKoB7_TsQLYBwDSCDIQAjIIgICAgICAgAg6FJ_QgICAgASQwICAgKCogAKogYAQSL39wTpYlZeHt9yJlgNgAPoLAggBgAwBqg0CSlDqDRMIg7iHt9yJlgMVEkTDBh2-BxpciA4J0BUBgBcBshcEGAxQAQ&num=1&cid=CAQSkwIAEQoqgSpeWUelkeeunv2uOUkYmdIOOKNCgjRzk_9tihkhPAizEfMTaNzCZa3m7YOXCDApAtrevCW7yq1kaWHcKTRWuqxZp9O6rELNEBGUvKmwIfbI6TWLX4GUe6FUA_KnMTkMaR_NscNQCBEc5NwNwYVUC271KFz1wGjRTdiFZT29AexCsbbO-VWe70MBuYRbvFOmurM_EL7zEcWLwwpWZt-8lIuuFz2Q8gXG2F-2184K6xBLEOXQA09_ljsgSJY6OifisGret9AjPsEy0oiR8zaH-RSjIzSd4v8wP7qxsYfmTlLgu5CNzOq1dy2piN0eZkriDdegfbfujQ6IzFP3ANQ2m_csYNOq1R5BKGjZ75RnZxgBIAg&sig=AOD64_0lV3a8qCTp2RHD4hJD8c35QotVRA&client=ca-pub-8934993653059501&adurl=https://exch.quantserve.com/r?&a=p-1RYxePXT9bCS2&labels=_qc.clk,_click.adserver.rtb,_click.rand.980569805&rtbip=103.229.8.118&rtb_id=CTlQAtuQegIUEQAYAtuQegIUGDyrYdXwEXZQhhBnBeI&redirecturl3=&cachebuster=862960.2430850402";
+var ftKeyword_7970013="";
+var ftCustom_7970013="QXtrzhgGAuM1bmrWAWQH7zVHDdsFRl2Orbo=";
+var ftSection_7970013="";
+var ftSegment_7970013="";
+var ftSegmentList_7970013=[];
+var ftRuleMatch_7970013="0";
+var ftTimestamp_7970013="1785940951";
+var ftGeoC2_7970013="jp";
+var ftGeoState_7970013="12";
+var ftGeoCity_7970013="yachiyo";
+var ftISP_7970013="kddi corporation";
+var ftSpeed_7970013="broadband";
+var ftConnType_7970013="wifi";
+var ftDMA_7970013="392001";
+var ftLong_7970013="140.08";
+var ftLat_7970013="35.72";
+var ftPostal_7970013="276-0046";
+var ftTimeZone_7970013="+900";
+var ftMobileCarrier_7970013="";
+var ftImp7970013 = {};
+ftImp7970013.privacy = "x";
+ftImp7970013.guidAge = "73";
+ftImp7970013.impID = "3D4C2D8F-57D4-6E4C-41D8-3166653E0CB9";
+ftImp7970013.duid = "FT:67181BA99F7BB8";
+
+ftImp7970013.ft_tpplid = "";
+ftImp7970013.ft_c = {};
+ftImp7970013.gdpr = "0";
+ftImp7970013.gdpr_consent = "";
+ftImp7970013.gdpr_pd = "";
+ftImp7970013.oob_consent = "";
+ftImp7970013.gdprStoredConsent = "";
+ftImp7970013.us_privacy = "";
+ftImp7970013.gpc = "";
+
+ftImp7970013.jsAppend = "1";
+var ftCreativeId_7970013 = "5960174";
+(function(){var tag=document.getElementById("ft_servedby_7970013")||function(s){return s[s.length-1]}(document.getElementsByTagName("script")),js=document.createElement("script");js.src="https://ajs-assets.ftstatic.com/ftUtils.js";js.id="ftscript_m7970013";js.setAttribute("name","ftscript_m7970013");tag.parentNode.insertBefore(js,tag)})();window.fTChecker=window.fTChecker||function(id){if(!id)return false;id=""+id;if(window.hasOwnProperty("ftUtils")){window["ft"+id]=Object.assign({},window.ftUtils.common);window["ft"+id].getBannerConfig(id)}else(function(id){window.setTimeout(function(){window.fTChecker(id)},50)})(id)};window.fTChecker("7970013");
+
